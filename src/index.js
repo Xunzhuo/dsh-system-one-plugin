@@ -189,7 +189,10 @@ export function apply(ctx, config) {
         lines.push(`[System Duo] One free key for vllm-sr/auto and the decision models (${new URL(s.site).host}) is saved in ${saved}. Using it accepts the terms (${s.terms}); requests are logged to improve the services and to train models (${s.privacy}).${later}`)
       }
       for (const { service, error } of failed) {
-        lines.push(`[System Duo] No free key from ${new URL(service.site).host} (${error.code ?? error.status ?? 'error'}: ${clip(String(error.message), 160)}). Get one at ${service.site} and save it as ${service.ref}.`)
+        if (keysAbort.signal.aborted) continue
+        // a DOMException's code is a legacy number (20 for an abort, 23 for a timeout); its name says what happened
+        const why = typeof error.code === 'number' ? error.name : error.code ?? error.status ?? 'error'
+        lines.push(`[System Duo] No free key from ${new URL(service.site).host} (${why}: ${clip(String(error.message), 160)}). Get one at ${service.site} and save it as ${service.ref}.`)
       }
       if (lines.length === 0) return
       if (!store) process.stderr.write(`${lines.join('\n')}\n`)
