@@ -116,6 +116,9 @@ VLLM_SR_API_KEY=... node probes/guard-probe.mjs vllm-sr/d3-ultra      # live cal
 VLLM_SR_API_KEY=... node probes/shield-probe.mjs vllm-sr/d3-ultra     # live calibration of the shield
 ```
 
+A `v*` tag publishes the package to npm from GitHub Actions with trusted publishing, with no npm token in the
+repository; see [RELEASING.md](https://github.com/Xunzhuo/dsh-system-one-plugin/blob/main/RELEASING.md).
+
 ## Trademarks
 
 DeepSeek Harness is a registered trademark of DeepSeek, named here only to identify the harness the plugin works with.

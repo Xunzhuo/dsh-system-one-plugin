@@ -1,0 +1,84 @@
+# npm trusted publishing: the package's trusted publisher on npmjs.com names this file (publish.yml), so renaming it
+# stops publishing until that trusted publisher is replaced. Setup: RELEASING.md.
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Check that npm supports trusted publishing
+        run: |
+          npm --version
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number)
+            if (major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)))) process.exit(0)
+            console.log("::error::npm " + process.argv[1] + " cannot use trusted publishing, which needs npm 11.5.1 or later")
+            process.exit(1)
+          ' "$(npm --version)"
+
+      - name: Install
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            echo "No lockfile: nothing to install."
+          fi
+
+      - name: Test
+        run: npm test
+
+      - name: Check the tag against package.json
+        id: package
+        run: |
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          if [ "$GITHUB_REF_TYPE" != tag ] || [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::package.json holds $name@$version, which only the tag v$version publishes; this run is on $GITHUB_REF_TYPE $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: List the package contents
+        run: npm pack --dry-run
+
+      - name: Skip a version that is already on npm
+        id: npm
+        env:
+          SPEC: ${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          # Anonymous lookup: the .npmrc that setup-node writes names NODE_AUTH_TOKEN, which is unset here.
+          if [ "$(npm view "$SPEC" version --userconfig /dev/null 2>/dev/null)" = "$VERSION" ]; then
+            echo "::notice::$SPEC is already on npm; nothing to publish."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.npm.outputs.published != 'true'
+        run: npm publish --access public --provenance

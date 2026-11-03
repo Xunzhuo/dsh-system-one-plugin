@@ -53,7 +53,8 @@
     "@deepseek-ai/schemastery": "*"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "test": "node --test test/*.test.js"
