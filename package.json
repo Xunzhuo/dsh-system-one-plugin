@@ -1,7 +1,7 @@
 {
-  "name": "dsh-system-one",
+  "name": "@vllm-sr/dsh",
   "version": "0.3.0",
-  "description": "System Duo for DeepSeek Harness: System One decision models guard, shield, triage and check your agent around System Two (vllm-sr/auto). One free key, no setup.",
+  "description": "System Duo for DeepSeek Harness. Thinking, fast and slow. One key: System One decision models guard, shield, triage and check your agent around System Two (vllm-sr/auto), with one free app.vllm-sr.ai key.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -11,7 +11,9 @@
     "guardrails",
     "prompt-injection",
     "vllm-semantic-router",
-    "system-duo"
+    "vllm-sr",
+    "system-duo",
+    "system-one"
   ],
   "author": "Xunzhuo Liu",
   "license": "Apache-2.0",

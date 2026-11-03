@@ -1,7 +1,7 @@
 /**
- * System One for DeepSeek Harness. The LLM (System Two) plans and acts; a
- * decision model (System One) answers the many small questions around it in
- * a fraction of a second, with calibrated probabilities:
+ * System Duo for DeepSeek Harness (@vllm-sr/dsh). The LLM (System Two) plans
+ * and acts; a decision model (System One) answers the many small questions
+ * around it in a fraction of a second, with calibrated probabilities:
  *
  * - guard:  tools/pre-execute    is this action risky, off task, or leaking secrets?
  * - shield: tools/post-execute   does this tool result try to give the agent orders?
@@ -32,7 +32,7 @@ export const Config = z.object({
   apiKeyFile: z.string().default(''),
   autoKeys: z.boolean().default(true),
   llmKeyEnv: z.string().default('VLLM_SR_API_KEY'),
-  keyLabel: z.string().default('dsh-system-one'),
+  keyLabel: z.string().default('@vllm-sr/dsh'),
   model: z.string().default('vllm-sr/d3-ultra'),
   maxConcurrency: z.number().default(12),
   timeoutMs: z.number().default(30000),

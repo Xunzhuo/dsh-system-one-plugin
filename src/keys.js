@@ -63,7 +63,7 @@ export async function solve(challenge, difficulty, { signal, chunk = 20000 } = {
 async function postJSON(url, body, { fetchImpl, signal, site }) {
   const response = await fetchImpl(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': 'dsh-system-one' },
+    headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': 'vllm-sr-dsh' },
     body: JSON.stringify(body),
     signal,
   })
@@ -83,7 +83,7 @@ async function postJSON(url, body, { fetchImpl, signal, site }) {
 }
 
 /** One new key from one site. A challenge that expired while it was being solved is fetched once more. */
-export async function requestKey(service, { label = 'dsh-system-one', fetchImpl = globalThis.fetch, signal } = {}) {
+export async function requestKey(service, { label = '@vllm-sr/dsh', fetchImpl = globalThis.fetch, signal } = {}) {
   for (let attempt = 0; ; attempt++) {
     const challenge = await postJSON(service.site + service.challenge, {}, { fetchImpl, signal, site: service.site })
     if (typeof challenge?.challenge !== 'string' || typeof challenge?.difficulty !== 'number') {

@@ -3,7 +3,7 @@
 # the app's settings still wins, and a profile patch can replace either row.
 - insert:
     - id: system-one
-      name: dsh-system-one
+      name: '@vllm-sr/dsh'
 
 - id: llm-pi-ai
   config:

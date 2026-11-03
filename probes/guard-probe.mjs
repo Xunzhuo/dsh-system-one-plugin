@@ -1,6 +1,6 @@
 // Guard calibration probe: run labeled commands through the guard's questions
 // and thresholds, live, and report verdicts, accuracy and latency.
-// Usage: node probes/guard-probe.mjs [model]
+// Usage: VLLM_SR_API_KEY=... node probes/guard-probe.mjs [model]
 import { writeFileSync } from 'node:fs'
 import { createDecisionClient, yes } from '../src/client.js'
 import { GUARD } from '../src/questions.js'
@@ -69,7 +69,7 @@ function verdictOf(answers) {
   return 'allow'
 }
 
-const client = createDecisionClient({ baseURL: 'https://decision.vllm-sr.ai', apiKeyEnv: 'DECISION_API_KEY' })
+const client = createDecisionClient({ baseURL: 'https://app.vllm-sr.ai', apiKeyEnv: 'VLLM_SR_API_KEY' })
 client.warm()
 await new Promise(resolve => setTimeout(resolve, 1500))
 const rows = []
