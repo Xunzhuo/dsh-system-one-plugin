@@ -79,8 +79,21 @@ export function createDecisionClient(options) {
 
   async function acquire(signal) {
     while (active >= maxConcurrency) {
-      await new Promise(resolve => waiting.push(resolve))
       signal?.throwIfAborted()
+      // A cancelled caller leaves the queue at once: a wakeup it took without taking the slot would be lost for good.
+      await new Promise((resolve, reject) => {
+        const wake = () => {
+          signal?.removeEventListener('abort', cancel)
+          resolve()
+        }
+        const cancel = () => {
+          const at = waiting.indexOf(wake)
+          if (at >= 0) waiting.splice(at, 1)
+          reject(signal.reason)
+        }
+        waiting.push(wake)
+        signal?.addEventListener('abort', cancel, { once: true })
+      })
     }
     active++
   }

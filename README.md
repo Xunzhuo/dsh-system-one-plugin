@@ -59,7 +59,7 @@ of your profile patch stay as they are.
 
 System One sends what it decides about: the user's request (clipped), each tool call it reviews, the passages of tool
 results it screens, the end of the turn, and the items given to the `system_one` tool. System Two receives the
-conversation as any LLM provider does. System Duo logs requests to improve the services; read its
+conversation as any LLM provider does. System Duo logs requests to improve the services and to train models; read its
 [terms](https://app.vllm-sr.ai/terms) and [privacy](https://app.vllm-sr.ai/privacy) pages before you use it with
 private code or data. Each reflex can be turned off.
 
@@ -121,7 +121,7 @@ repository; see [RELEASING.md](https://github.com/Xunzhuo/dsh-system-one-plugin/
 
 ## Trademarks
 
-DeepSeek Harness is a registered trademark of DeepSeek, named here only to identify the harness the plugin works with.
+DeepSeek Harness is a trademark of DeepSeek, named here only to identify the harness the plugin works with.
 The plugin is not a DeepSeek product, and DeepSeek does not endorse System Duo.
 
 ## License

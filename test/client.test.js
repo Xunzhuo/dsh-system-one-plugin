@@ -64,6 +64,31 @@ test('an unreachable API fails fast with the hook limits', async () => {
   client.close()
 })
 
+test('a caller cancelled while it waits for a slot leaves the queue and the next caller gets the slot', async () => {
+  const held = []
+  const { server, url } = await fakeApi((body, request, response) => {
+    held.push(() => response.end(JSON.stringify({ answers: answer(body.state), model: body.model, usage: { input_tokens: 1 } })))
+  })
+  process.env.S1_TEST_KEY = 'sk-vsr-test'
+  const client = createDecisionClient({ baseURL: url, apiKeyEnv: 'S1_TEST_KEY', maxConcurrency: 1 })
+  const ask = (state, signal) => client.ask({ model: 'm', questions: {}, inputs: [{ state }], signal })
+  const first = ask('first')
+  while (held.length === 0) await new Promise(resolve => setTimeout(resolve, 5))
+  const cancelled = new AbortController()
+  const second = ask('second', cancelled.signal)
+  const third = ask('third')
+  cancelled.abort()
+  await assert.rejects(second, { name: 'AbortError' })
+  held.shift()()
+  await first
+  while (held.length === 0) await new Promise(resolve => setTimeout(resolve, 5))
+  held.shift()()
+  const r = await Promise.race([third, new Promise((_, reject) => setTimeout(() => reject(new Error('the third caller never got the slot')), 2000))])
+  assert.equal(r.answers.length, 1)
+  client.close()
+  server.close()
+})
+
 test('a missing key is a clear error', async () => {
   delete process.env.S1_NO_KEY
   const client = createDecisionClient({ baseURL: 'http://127.0.0.1:9', apiKeyEnv: 'S1_NO_KEY' })

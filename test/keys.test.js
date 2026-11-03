@@ -2,14 +2,17 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import http from 'node:http'
 import { test } from 'node:test'
-import { ensureKeys, leadingZeroBits, requestKey, solve } from '../src/keys.js'
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { appendDotenv, ensureKeys, leadingZeroBits, readDotenv, requestKey, solve } from '../src/keys.js'
 
 function bits(challenge, nonce) {
   return leadingZeroBits(createHash('sha256').update(`${challenge}:${nonce}`).digest())
 }
 
 // a key site in miniature: challenge, proof check, terms check, optional failures
-async function fakeSite({ difficulty = 8, expireFirst = false, limited = false } = {}) {
+async function fakeSite({ difficulty = 8, expireFirst = false, limited = false, key = undefined } = {}) {
   const issued = []
   let creates = 0
   const server = http.createServer((req, res) => {
@@ -32,7 +35,7 @@ async function fakeSite({ difficulty = 8, expireFirst = false, limited = false }
         if (expireFirst && creates === 1) return send(400, { error: { code: 'challenge_expired', message: 'expired' } })
         if (!issued.includes(challenge) || bits(challenge, nonce) < difficulty) return send(400, { error: { code: 'invalid_proof', message: 'bad proof' } })
         if (terms !== true) return send(400, { error: { code: 'terms_not_accepted', message: 'accept the terms' } })
-        return send(201, { api_key: `sk-test-${label}-${creates}` })
+        return send(201, { api_key: key ?? `sk-vsr-${label}${String(creates).padStart(39, '0')}` })
       }
       send(404, { error: { code: 'not_found', message: req.url } })
     })
@@ -56,7 +59,7 @@ test('the solver finds a nonce with enough zero bits', async () => {
 test('a key comes back for a valid proof with the terms accepted', async () => {
   const site = await fakeSite()
   try {
-    assert.equal(await requestKey(site.service, { label: 'unit' }), 'sk-test-unit-1')
+    assert.equal(await requestKey(site.service, { label: 'unit' }), `sk-vsr-unit${'1'.padStart(39, '0')}`)
   } finally {
     await site.close()
   }
@@ -65,7 +68,7 @@ test('a key comes back for a valid proof with the terms accepted', async () => {
 test('an expired challenge is fetched once more', async () => {
   const site = await fakeSite({ expireFirst: true })
   try {
-    assert.equal(await requestKey(site.service, { label: 'unit' }), 'sk-test-unit-2')
+    assert.equal(await requestKey(site.service, { label: 'unit' }), `sk-vsr-unit${'2'.padStart(39, '0')}`)
     assert.deepEqual(site.stats(), { challenges: 2, creates: 2 })
   } finally {
     await site.close()
@@ -88,7 +91,7 @@ test('only missing keys are fetched, and a refusal is reported with its reason',
       label: 'unit',
     })
     assert.equal(stored.get('HAVE_KEY'), 'sk-existing')
-    assert.equal(stored.get('NEW_KEY'), 'sk-test-unit-1')
+    assert.equal(stored.get('NEW_KEY'), `sk-vsr-unit${'1'.padStart(39, '0')}`)
     assert.equal(stored.has('LIMITED_KEY'), false)
     assert.deepEqual(result.allocated.map(s => s.ref), ['NEW_KEY'])
     assert.equal(result.failed.length, 1)
@@ -98,5 +101,38 @@ test('only missing keys are fetched, and a refusal is reported with its reason',
   } finally {
     await good.close()
     await limited.close()
+  }
+})
+
+test('a challenge harder than the plugin spends is refused without solving it', async () => {
+  const site = await fakeSite({ difficulty: 40 })
+  try {
+    await assert.rejects(requestKey(site.service, { label: 'unit' }), { code: 'difficulty_too_high' })
+    assert.equal(site.stats().creates, 0)
+  } finally {
+    await site.close()
+  }
+})
+
+test('an answer that is not a System Duo key is not taken', async () => {
+  const site = await fakeSite({ key: 'sk-vsr-abcdefghijklmnopqrstuvwxyz\nOTHER=1' })
+  try {
+    await assert.rejects(requestKey(site.service, { label: 'unit' }), /no key in the answer/)
+  } finally {
+    await site.close()
+  }
+})
+
+test('a key added to an existing dotenv file leaves it readable by its owner only', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-keys-'))
+  try {
+    const path = join(dir, '.env')
+    writeFileSync(path, 'OTHER=1', { mode: 0o644 })
+    assert.equal(appendDotenv(path, 'VLLM_SR_API_KEY', 'sk-vsr-x'), true)
+    assert.equal(statSync(path).mode & 0o777, 0o600)
+    assert.deepEqual([...readDotenv(path)], [['OTHER', '1'], ['VLLM_SR_API_KEY', 'sk-vsr-x']])
+    assert.equal(appendDotenv(path, 'VLLM_SR_API_KEY', 'sk-vsr-y'), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

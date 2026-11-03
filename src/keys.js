@@ -4,7 +4,7 @@
  * key" button runs in the browser; the key is kept in DeepSeek Harness's credential store.
  */
 import { createHash, hash as oneShot } from 'node:crypto'
-import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
+import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { setImmediate as nextTick } from 'node:timers/promises'
 
@@ -19,6 +19,12 @@ export const SERVICES = [
     privacy: 'https://app.vllm-sr.ai/privacy',
   },
 ]
+
+// The most proof of work a key is worth here (24 bits, 16 times the 20 the site asks for now: up to a few minutes),
+// and the time one key may take.
+export const MAX_DIFFICULTY = 24
+const KEY_TIMEOUT_MS = 300000
+const KEY_FORMAT = /^sk-vsr-[0-9A-Za-z]{20,}$/
 
 const sha256 = typeof oneShot === 'function' ? data => oneShot('sha256', data, 'buffer') : data => createHash('sha256').update(data).digest()
 
@@ -83,16 +89,21 @@ async function postJSON(url, body, { fetchImpl, signal, site }) {
 }
 
 /** One new key from one site. A challenge that expired while it was being solved is fetched once more. */
-export async function requestKey(service, { label = '@vllm-sr/dsh', fetchImpl = globalThis.fetch, signal } = {}) {
+export async function requestKey(service, { label = '@vllm-sr/dsh', fetchImpl = globalThis.fetch, signal, timeoutMs = KEY_TIMEOUT_MS } = {}) {
+  const deadline = AbortSignal.timeout(timeoutMs)
+  signal = signal ? AbortSignal.any([signal, deadline]) : deadline
   for (let attempt = 0; ; attempt++) {
     const challenge = await postJSON(service.site + service.challenge, {}, { fetchImpl, signal, site: service.site })
     if (typeof challenge?.challenge !== 'string' || typeof challenge?.difficulty !== 'number') {
       throw new KeyError(`unexpected challenge from ${service.site}`, { site: service.site })
     }
+    if (challenge.difficulty > MAX_DIFFICULTY) {
+      throw new KeyError(`${service.site} asks for ${challenge.difficulty} bits of proof of work, more than the ${MAX_DIFFICULTY} this plugin spends`, { site: service.site, code: 'difficulty_too_high' })
+    }
     const nonce = await solve(challenge.challenge, challenge.difficulty, { signal })
     try {
       const created = await postJSON(service.site + service.create, { challenge: challenge.challenge, nonce, label, accept_terms: true }, { fetchImpl, signal, site: service.site })
-      if (typeof created?.api_key !== 'string') throw new KeyError(`no key in the answer from ${service.site}`, { site: service.site })
+      if (typeof created?.api_key !== 'string' || !KEY_FORMAT.test(created.api_key)) throw new KeyError(`no key in the answer from ${service.site}`, { site: service.site })
       return created.api_key
     } catch (error) {
       if (attempt === 0 && error?.code === 'challenge_expired') continue
@@ -119,8 +130,8 @@ export function readDotenv(path) {
 }
 
 /**
- * Add NAME=value to a dotenv file unless the name is already there. A new file is created readable by its owner
- * only; an existing file keeps its mode.
+ * Add NAME=value to a dotenv file unless the name is already there. The file, new or not, is left readable by its
+ * owner only.
  */
 export function appendDotenv(path, name, value) {
   const current = readDotenv(path)
@@ -132,6 +143,7 @@ export function appendDotenv(path, name, value) {
   } catch {}
   const fd = openSync(path, 'a', 0o600)
   try {
+    fchmodSync(fd, 0o600)
     writeSync(fd, `${text && !text.endsWith('\n') ? '\n' : ''}${name}=${value}\n`)
   } finally {
     closeSync(fd)

@@ -122,6 +122,7 @@ export function apply(ctx, config) {
   let credentials
   let keysReady
   let keysNotice
+  const keysAbort = new AbortController()
   // DeepSeek Harness's user dotenv: the credential store falls back to it, and a headless run reads it at launch
   const envFile = join(process.env.DSH_HOME || join(homedir(), '.dsh'), '.env')
   const gotKeys = new Map()
@@ -138,7 +139,10 @@ export function apply(ctx, config) {
   })
   ctx.effect(() => {
     client.warm()
-    return () => client.close()
+    return () => {
+      keysAbort.abort()
+      client.close()
+    }
   })
   const trace = createTrace(config.trace === 'off' ? undefined : config.trace || process.env.S1_TRACE || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'system-one', 'trace.jsonl'))
   const sessions = new Map()
@@ -174,7 +178,7 @@ export function apply(ctx, config) {
         const own = await resolve(config.apiKeyEnv)
         if (own?.startsWith('sk-vsr-')) await keep(config.llmKeyEnv, own)
       }
-      return ensureKeys({ resolve, store: keep, services, label: config.keyLabel })
+      return ensureKeys({ resolve, store: keep, services, label: config.keyLabel, signal: keysAbort.signal })
     })().then(({ allocated, failed }) => {
       trace({ ev: 'keys', store: Boolean(store), allocated: allocated.map(s => s.site), failed: failed.map(f => ({ site: f.service.site, code: f.error.code, message: clip(String(f.error.message), 200) })) })
       const lines = []
@@ -182,7 +186,7 @@ export function apply(ctx, config) {
         const saved = store ? `DeepSeek Harness's credential store and ${where}` : `${where}`
         const later = !store ? ' A headless run reads keys when it starts, so vllm-sr/auto answers from the next run.' : ''
         const s = allocated[0]
-        lines.push(`[System Duo] One free key for vllm-sr/auto and the decision models (${new URL(s.site).host}) is saved in ${saved}. Using it accepts the terms (${s.terms}); requests are logged to improve the services (${s.privacy}).${later}`)
+        lines.push(`[System Duo] One free key for vllm-sr/auto and the decision models (${new URL(s.site).host}) is saved in ${saved}. Using it accepts the terms (${s.terms}); requests are logged to improve the services and to train models (${s.privacy}).${later}`)
       }
       for (const { service, error } of failed) {
         lines.push(`[System Duo] No free key from ${new URL(service.site).host} (${error.code ?? error.status ?? 'error'}: ${clip(String(error.message), 160)}). Get one at ${service.site} and save it as ${service.ref}.`)
