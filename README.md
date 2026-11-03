@@ -1,43 +1,49 @@
-# dsh-system-one
+# @vllm-sr/dsh
 
-System One for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). An agent's LLM thinks slowly, in
-tokens. System One, a decision model, answers the many small questions around it in about half a second each, with
-calibrated probabilities: is this command dangerous, does this file try to give the agent orders, is the work really
-done, which team should get each of these 230 tickets.
+**System Duo** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): *Thinking, fast and slow. One
+key.* (快思考，慢思考，一把 key)
 
-- **System Two**, the LLM, plans and acts: `vllm-sr/auto` from [vLLM Semantic Router](https://github.com/vllm-project/semantic-router)
-  at [mom.vllm-sr.ai](https://mom.vllm-sr.ai).
-- **System One**, the decision model, decides: `vllm-sr/d3-ultra` at [decision.vllm-sr.ai](https://decision.vllm-sr.ai).
-  It answers typed questions (choice, yes/no, score, box) with probabilities, from one forward pass per question
-  instead of generated text.
+An agent's LLM thinks slowly, in tokens. System One, a decision model, answers the many small questions around it in
+about half a second each, with calibrated probabilities: is this command dangerous, does this file try to give the
+agent orders, is the work really done, which team should get each of these 230 tickets.
 
-Both services are free, and the plugin gets the keys for you.
+- **System Two**, the LLM, plans and acts: `vllm-sr/auto` from [vLLM Semantic Router](https://github.com/vllm-project/semantic-router),
+  which sends each step to the right open model.
+- **System One**, the decision model, decides: `vllm-sr/d3-ultra`. It answers typed questions (choice, yes/no, score,
+  box) with probabilities, from one forward pass per question instead of generated text.
+
+Both come from [System Duo](https://app.vllm-sr.ai) with one free key, and the plugin gets that key for you: System One
+answers at `https://app.vllm-sr.ai/v1/systemone`, and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ## Quick start
 
 ```bash
-npm install -g @deepseek-ai/dsh                 # DeepSeek Harness 0.2.1 or later, Node 24.9 or later
-dsh plugin --profile web add dsh-system-one
+npm install -g @deepseek-ai/dsh                 # DeepSeek Harness 0.2.1-rc.5 or a later 0.2 release, Node 24.9 or later
+dsh plugin --profile web add @vllm-sr/dsh
 dsh web
 ```
 
 The package can also come straight from GitHub: `dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
 
-On its first start the plugin gets one free key from each service, with the same small proof of work their "Get a
-key" buttons run in the browser, and saves both in DeepSeek Harness's credential store and in `~/.dsh/.env`
-(readable by you only). A notice in the session says so. `vllm-sr/auto` becomes the default model; choose another model
+On its first start the plugin gets one free System Duo key, with the same small proof of work the site's "Get your
+API key" button runs in the browser, and saves it in DeepSeek Harness's credential store and in `~/.dsh/.env` (readable
+by you only). A notice in the session says so. `vllm-sr/auto` becomes the default model; choose another model
 in the app and System One keeps working beside it.
 
 Headless:
 
 ```bash
-dsh plugin --profile headless add dsh-system-one
+dsh plugin --profile headless add @vllm-sr/dsh
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
-A headless run reads its keys when it starts. If there are none yet, the first run fetches and saves them, and the LLM
-answers from the next run (or start `dsh web` once first). In CI, set `VLLM_SR_API_KEY` and `DECISION_API_KEY`
-instead; keys you set yourself are always used and never replaced.
+A headless run reads its key when it starts. If there is none yet, the first run fetches and saves it, and the LLM
+answers from the next run (or start `dsh web` once first). In CI, set `VLLM_SR_API_KEY` to a key from
+[app.vllm-sr.ai](https://app.vllm-sr.ai) instead; a key you set yourself is always used and never replaced.
+
+Had the earlier `dsh-system-one` 0.2 from GitHub or a local path? Replace it with
+`dsh plugin --profile web remove dsh-system-one`, then add `@vllm-sr/dsh` as above. Your keys and the `system-one` row
+of your profile patch stay as they are.
 
 ## What it does
 
@@ -51,12 +57,11 @@ instead; keys you set yourself are always used and never replaced.
 
 ## Your data
 
-System One sends the decision service what it decides about: the user's request (clipped), each tool call it
-reviews, the passages of tool results it screens, the end of the turn, and the items given to the `system_one` tool.
-The LLM service receives the conversation as any LLM provider does. Both services log requests to improve them; read
-their terms and privacy pages ([mom.vllm-sr.ai](https://mom.vllm-sr.ai/privacy),
-[decision.vllm-sr.ai](https://decision.vllm-sr.ai/privacy)) before you use them with private code or data. Each
-reflex can be turned off.
+System One sends what it decides about: the user's request (clipped), each tool call it reviews, the passages of tool
+results it screens, the end of the turn, and the items given to the `system_one` tool. System Two receives the
+conversation as any LLM provider does. System Duo logs requests to improve the services and to train models; read its
+[terms](https://app.vllm-sr.ai/terms) and [privacy](https://app.vllm-sr.ai/privacy) pages before you use it with
+private code or data. Each reflex can be turned off.
 
 The local trace (`~/.dsh/system-one/trace.jsonl`, readable by you only) records every decision with its probabilities
 and redacts secret-shaped strings; it never records keys. Set `trace: off` to disable it.
@@ -70,7 +75,7 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
 - id: system-one
   config:
     model: vllm-sr/d3-ultra        # vllm-sr/d3-flash is a little faster; d3-ultra is the most accurate
-    autoKeys: true                 # fetch free keys on first use
+    autoKeys: true                 # fetch the free System Duo key on first use
     guardAskMode: ask              # what a flagged call does: ask (wait for approval) or deny
     guardAskAt: 1.8                # risk score (0 Safe to 3 Critical) that asks
     guardDenyAt: 2.5               # risk score that always denies
@@ -83,7 +88,9 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
     trace: ~/.dsh/system-one/trace.jsonl   # or off
 ```
 
-The keys come from the credential references `DECISION_API_KEY` and `VLLM_SR_API_KEY` (`apiKeyEnv`, `llmKeyEnv`).
+The key comes from the credential reference `VLLM_SR_API_KEY` (`llmKeyEnv`), which both systems use. A separate
+System One key in `DECISION_API_KEY` (`apiKeyEnv`), as plugin 0.2 kept it, still wins for System One; a 0.2 key for
+`vllm-sr/auto` keeps working too.
 If the decision service cannot be reached, a guarded call falls back to `guardOnError` (default `allow`); the
 harness's own sandbox and approvals still apply.
 
@@ -105,9 +112,17 @@ The probe sets are ours and small: read them as a smoke test, not a benchmark.
 
 ```bash
 npm test                                         # unit tests with a fake decision service and a fake key site
-DECISION_API_KEY=... node probes/guard-probe.mjs vllm-sr/d3-ultra     # live calibration of the guard
-DECISION_API_KEY=... node probes/shield-probe.mjs vllm-sr/d3-ultra    # live calibration of the shield
+VLLM_SR_API_KEY=... node probes/guard-probe.mjs vllm-sr/d3-ultra      # live calibration of the guard
+VLLM_SR_API_KEY=... node probes/shield-probe.mjs vllm-sr/d3-ultra     # live calibration of the shield
 ```
+
+A `v*` tag publishes the package to npm from GitHub Actions with trusted publishing, with no npm token in the
+repository; see [RELEASING.md](https://github.com/Xunzhuo/dsh-system-one-plugin/blob/main/RELEASING.md).
+
+## Trademarks
+
+DeepSeek Harness is a trademark of DeepSeek, named here only to identify the harness the plugin works with.
+The plugin is not a DeepSeek product, and DeepSeek does not endorse System Duo.
 
 ## License
 

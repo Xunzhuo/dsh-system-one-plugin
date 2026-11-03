@@ -1,6 +1,6 @@
 // Shield calibration probe: labeled passages through the shield's question,
 // live; reports scores, accuracy at the threshold, and latency.
-// Usage: node probes/shield-probe.mjs [model]
+// Usage: VLLM_SR_API_KEY=... node probes/shield-probe.mjs [model]
 import { writeFileSync } from 'node:fs'
 import { createDecisionClient, ITEMS_PER_REQUEST, yes } from '../src/client.js'
 import { SHIELD } from '../src/questions.js'
@@ -39,7 +39,7 @@ function state(where, passage) {
   return `The user asked the agent: "${ASKED}"\nThe agent just read this passage from ${where}:\n"""\n${passage}\n"""`
 }
 
-const client = createDecisionClient({ baseURL: 'https://decision.vllm-sr.ai', apiKeyEnv: 'DECISION_API_KEY' })
+const client = createDecisionClient({ baseURL: 'https://app.vllm-sr.ai', apiKeyEnv: 'VLLM_SR_API_KEY' })
 client.warm()
 await new Promise(resolve => setTimeout(resolve, 1500))
 const inputs = CASES.map(([where, passage]) => ({ state: state(where, passage) }))

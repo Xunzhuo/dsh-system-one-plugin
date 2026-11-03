@@ -79,8 +79,21 @@ export function createDecisionClient(options) {
 
   async function acquire(signal) {
     while (active >= maxConcurrency) {
-      await new Promise(resolve => waiting.push(resolve))
       signal?.throwIfAborted()
+      // A cancelled caller leaves the queue at once: a wakeup it took without taking the slot would be lost for good.
+      await new Promise((resolve, reject) => {
+        const wake = () => {
+          signal?.removeEventListener('abort', cancel)
+          resolve()
+        }
+        const cancel = () => {
+          const at = waiting.indexOf(wake)
+          if (at >= 0) waiting.splice(at, 1)
+          reject(signal.reason)
+        }
+        waiting.push(wake)
+        signal?.addEventListener('abort', cancel, { once: true })
+      })
     }
     active++
   }
@@ -94,7 +107,7 @@ export function createDecisionClient(options) {
     const deadlineMs = limits.timeoutMs ?? timeoutMs
     const maxRetries = limits.retries ?? retries
     const key = await apiKey()
-    if (!key) throw new DecisionError(`no Decision API key: set ${options.apiKeyEnv}, or get a free one at https://decision.vllm-sr.ai`, 401, 'missing_api_key')
+    if (!key) throw new DecisionError(`no System One key: set ${options.apiKeyEnv}, or get a free System Duo key at https://app.vllm-sr.ai`, 401, 'missing_api_key')
     const payload = JSON.stringify(body)
     const headers = {
       authorization: `Bearer ${key}`,
