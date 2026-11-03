@@ -1,7 +1,7 @@
 # @vllm-sr/dsh
 
 **System Duo** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): *Thinking, fast and slow. One
-key.* (快思考，慢思考，一把 key)
+key.*
 
 An agent's LLM thinks slowly, in tokens. System One, a decision model, answers the many small questions around it in
 about half a second each, with calibrated probabilities: is this command dangerous, does this file try to give the
