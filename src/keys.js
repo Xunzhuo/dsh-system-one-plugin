@@ -1,7 +1,7 @@
 /**
- * Free keys for the two services System One runs on: vllm-sr/auto (the LLM, mom.vllm-sr.ai) and the
- * decision models (decision.vllm-sr.ai). Each site hands out a key for a small proof of work, the same one
- * its "Get a key" button runs in the browser; the keys are kept in DeepSeek Harness's credential store.
+ * The free System Duo key (app.vllm-sr.ai): one key for both vllm-sr/auto, the LLM (System Two), and the
+ * decision models (System One). The site hands it out for a small proof of work, the same one its "Get your API
+ * key" button runs in the browser; the key is kept in DeepSeek Harness's credential store.
  */
 import { createHash, hash as oneShot } from 'node:crypto'
 import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
@@ -11,21 +11,12 @@ import { setImmediate as nextTick } from 'node:timers/promises'
 export const SERVICES = [
   {
     ref: 'VLLM_SR_API_KEY',
-    name: 'vllm-sr/auto',
-    site: 'https://mom.vllm-sr.ai',
-    challenge: '/pt/api/keys/challenge',
-    create: '/pt/api/keys',
-    terms: 'https://mom.vllm-sr.ai/terms',
-    privacy: 'https://mom.vllm-sr.ai/privacy',
-  },
-  {
-    ref: 'DECISION_API_KEY',
-    name: 'vllm-sr/d3-ultra',
-    site: 'https://decision.vllm-sr.ai',
+    name: 'System Duo',
+    site: 'https://app.vllm-sr.ai',
     challenge: '/api/keys/challenge',
     create: '/api/keys',
-    terms: 'https://decision.vllm-sr.ai/terms',
-    privacy: 'https://decision.vllm-sr.ai/privacy',
+    terms: 'https://app.vllm-sr.ai/terms',
+    privacy: 'https://app.vllm-sr.ai/privacy',
   },
 ]
 

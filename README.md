@@ -1,17 +1,17 @@
 # dsh-system-one
 
-System One for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). An agent's LLM thinks slowly, in
-tokens. System One, a decision model, answers the many small questions around it in about half a second each, with
+**System Duo** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): *Thinking, fast and slow. One
+key.* An agent's LLM thinks slowly, in tokens. System One, a decision model, answers the many small questions around it in about half a second each, with
 calibrated probabilities: is this command dangerous, does this file try to give the agent orders, is the work really
 done, which team should get each of these 230 tickets.
 
-- **System Two**, the LLM, plans and acts: `vllm-sr/auto` from [vLLM Semantic Router](https://github.com/vllm-project/semantic-router)
-  at [mom.vllm-sr.ai](https://mom.vllm-sr.ai).
-- **System One**, the decision model, decides: `vllm-sr/d3-ultra` at [decision.vllm-sr.ai](https://decision.vllm-sr.ai).
-  It answers typed questions (choice, yes/no, score, box) with probabilities, from one forward pass per question
-  instead of generated text.
+- **System Two**, the LLM, plans and acts: `vllm-sr/auto` from [vLLM Semantic Router](https://github.com/vllm-project/semantic-router),
+  which sends each step to the right open model.
+- **System One**, the decision model, decides: `vllm-sr/d3-ultra`. It answers typed questions (choice, yes/no, score,
+  box) with probabilities, from one forward pass per question instead of generated text.
 
-Both services are free, and the plugin gets the keys for you.
+Both come from [System Duo](https://app.vllm-sr.ai) (`https://app.vllm-sr.ai/v1`) with one free key, and the plugin
+gets that key for you.
 
 ## Quick start
 
@@ -23,9 +23,9 @@ dsh web
 
 The package can also come straight from GitHub: `dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
 
-On its first start the plugin gets one free key from each service, with the same small proof of work their "Get a
-key" buttons run in the browser, and saves both in DeepSeek Harness's credential store and in `~/.dsh/.env`
-(readable by you only). A notice in the session says so. `vllm-sr/auto` becomes the default model; choose another model
+On its first start the plugin gets one free System Duo key, with the same small proof of work the site's "Get your
+API key" button runs in the browser, and saves it in DeepSeek Harness's credential store and in `~/.dsh/.env` (readable
+by you only). A notice in the session says so. `vllm-sr/auto` becomes the default model; choose another model
 in the app and System One keeps working beside it.
 
 Headless:
@@ -35,9 +35,9 @@ dsh plugin --profile headless add dsh-system-one
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
-A headless run reads its keys when it starts. If there are none yet, the first run fetches and saves them, and the LLM
-answers from the next run (or start `dsh web` once first). In CI, set `VLLM_SR_API_KEY` and `DECISION_API_KEY`
-instead; keys you set yourself are always used and never replaced.
+A headless run reads its key when it starts. If there is none yet, the first run fetches and saves it, and the LLM
+answers from the next run (or start `dsh web` once first). In CI, set `VLLM_SR_API_KEY` to a key from
+[app.vllm-sr.ai](https://app.vllm-sr.ai) instead; a key you set yourself is always used and never replaced.
 
 ## What it does
 
@@ -51,12 +51,11 @@ instead; keys you set yourself are always used and never replaced.
 
 ## Your data
 
-System One sends the decision service what it decides about: the user's request (clipped), each tool call it
-reviews, the passages of tool results it screens, the end of the turn, and the items given to the `system_one` tool.
-The LLM service receives the conversation as any LLM provider does. Both services log requests to improve them; read
-their terms and privacy pages ([mom.vllm-sr.ai](https://mom.vllm-sr.ai/privacy),
-[decision.vllm-sr.ai](https://decision.vllm-sr.ai/privacy)) before you use them with private code or data. Each
-reflex can be turned off.
+System One sends what it decides about: the user's request (clipped), each tool call it reviews, the passages of tool
+results it screens, the end of the turn, and the items given to the `system_one` tool. System Two receives the
+conversation as any LLM provider does. System Duo logs requests to improve the services; read its
+[terms](https://app.vllm-sr.ai/terms) and [privacy](https://app.vllm-sr.ai/privacy) pages before you use it with
+private code or data. Each reflex can be turned off.
 
 The local trace (`~/.dsh/system-one/trace.jsonl`, readable by you only) records every decision with its probabilities
 and redacts secret-shaped strings; it never records keys. Set `trace: off` to disable it.
@@ -83,7 +82,9 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
     trace: ~/.dsh/system-one/trace.jsonl   # or off
 ```
 
-The keys come from the credential references `DECISION_API_KEY` and `VLLM_SR_API_KEY` (`apiKeyEnv`, `llmKeyEnv`).
+The key comes from the credential reference `VLLM_SR_API_KEY` (`llmKeyEnv`), which both systems use. A separate
+System One key in `DECISION_API_KEY` (`apiKeyEnv`), as plugin 0.2 kept it, still wins for System One; a 0.2 key for
+`vllm-sr/auto` keeps working too.
 If the decision service cannot be reached, a guarded call falls back to `guardOnError` (default `allow`); the
 harness's own sandbox and approvals still apply.
 

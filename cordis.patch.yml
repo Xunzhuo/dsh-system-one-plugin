@@ -1,6 +1,6 @@
-# System One on the agent loop, and the free LLM it pairs with: vllm-sr/auto from vLLM Semantic Router
-# (mom.vllm-sr.ai). Both keys are fetched on first use. A model chosen in the app's settings still wins, and a
-# profile patch can replace either row.
+# System Duo for DeepSeek Harness: System One (decision models) on the agent loop, and System Two, the free LLM
+# vllm-sr/auto from vLLM Semantic Router, both at app.vllm-sr.ai with one key fetched on first use. A model chosen in
+# the app's settings still wins, and a profile patch can replace either row.
 - insert:
     - id: system-one
       name: dsh-system-one
@@ -9,10 +9,10 @@
   config:
     providers:
       vllm-sr:
-        displayName: vLLM Semantic Router
+        displayName: System Duo (vLLM Semantic Router)
         apiKeyEnv: VLLM_SR_API_KEY
         api: openai-completions
-        baseURL: https://mom.vllm-sr.ai/v1
+        baseURL: https://app.vllm-sr.ai/v1
         compat:
           supportsDeveloperRole: false
           maxTokensField: max_tokens

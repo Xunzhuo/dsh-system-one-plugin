@@ -9,7 +9,7 @@
  * - done:   agent/turn-stopping  is the work really finished and checked?
  * - tool:   system_one           one rubric over many items, for the LLM to call
  *
- * On first use it gets free keys for vllm-sr/auto and the decision models (keys.js).
+ * On first use it gets one free System Duo key (app.vllm-sr.ai) for vllm-sr/auto and the decision models (keys.js).
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -27,7 +27,7 @@ export const name = 'system-one'
 export const inject = ['tools', 'systemPrompt']
 
 export const Config = z.object({
-  baseURL: z.string().default('https://decision.vllm-sr.ai'),
+  baseURL: z.string().default('https://app.vllm-sr.ai'),
   apiKeyEnv: z.string().default('DECISION_API_KEY'),
   apiKeyFile: z.string().default(''),
   autoKeys: z.boolean().default(true),
@@ -126,11 +126,13 @@ export function apply(ctx, config) {
   const envFile = join(process.env.DSH_HOME || join(homedir(), '.dsh'), '.env')
   const gotKeys = new Map()
   const launchValue = ref => ctx.get('launchEnvironment')?.get(ref)?.value
+  const keyFor = async ref => (credentials ? (await credentials.resolve(ref))?.value : launchValue(ref)) || gotKeys.get(ref)
   const client = createDecisionClient({
     baseURL: config.baseURL,
     apiKeyEnv: config.apiKeyEnv,
     apiKeyFile: config.apiKeyFile,
-    resolveKey: async () => (credentials ? (await credentials.resolve(config.apiKeyEnv))?.value : launchValue(config.apiKeyEnv)) || gotKeys.get(config.apiKeyEnv),
+    // a System One key of its own (DECISION_API_KEY, as before 0.3) wins; else the System Duo key both systems take
+    resolveKey: async () => (await keyFor(config.apiKeyEnv)) || (await keyFor(config.llmKeyEnv)),
     maxConcurrency: config.maxConcurrency,
     timeoutMs: config.timeoutMs,
   })
@@ -158,32 +160,36 @@ export function apply(ctx, config) {
 
   function startKeys(store) {
     if (!config.autoKeys || keysReady) return
-    const refs = { VLLM_SR_API_KEY: config.llmKeyEnv, DECISION_API_KEY: config.apiKeyEnv }
-    const services = SERVICES.map(service => ({ ...service, ref: refs[service.ref] ?? service.ref }))
+    const services = SERVICES.map(service => ({ ...service, ref: config.llmKeyEnv }))
     const where = envFile.replace(homedir(), '~')
-    keysReady = ensureKeys({
-      resolve: async ref => (store ? (await store.resolve(ref))?.value : launchValue(ref) || readDotenv(envFile).get(ref)) || gotKeys.get(ref),
-      store: async (ref, value) => {
-        gotKeys.set(ref, value)
-        appendDotenv(envFile, ref, value)
-        if (store) await store.set(ref, value)
-      },
-      services,
-      label: config.keyLabel,
-    }).then(({ allocated, failed }) => {
+    const resolve = async ref => (store ? (await store.resolve(ref))?.value : launchValue(ref) || readDotenv(envFile).get(ref)) || gotKeys.get(ref)
+    const keep = async (ref, value) => {
+      gotKeys.set(ref, value)
+      appendDotenv(envFile, ref, value)
+      if (store) await store.set(ref, value)
+    }
+    keysReady = (async () => {
+      // A System One key from before System Duo works for vllm-sr/auto too: reuse it rather than make another.
+      if (!(await resolve(config.llmKeyEnv))) {
+        const own = await resolve(config.apiKeyEnv)
+        if (own?.startsWith('sk-vsr-')) await keep(config.llmKeyEnv, own)
+      }
+      return ensureKeys({ resolve, store: keep, services, label: config.keyLabel })
+    })().then(({ allocated, failed }) => {
       trace({ ev: 'keys', store: Boolean(store), allocated: allocated.map(s => s.site), failed: failed.map(f => ({ site: f.service.site, code: f.error.code, message: clip(String(f.error.message), 200) })) })
       const lines = []
       if (allocated.length) {
         const saved = store ? `DeepSeek Harness's credential store and ${where}` : `${where}`
-        const later = !store && allocated.some(s => s.ref === config.llmKeyEnv) ? ` A headless run reads keys when it starts, so ${allocated.find(s => s.ref === config.llmKeyEnv).name} answers from the next run.` : ''
-        lines.push(`[System One] Free keys for ${allocated.map(s => `${s.name} (${new URL(s.site).host})`).join(' and ')} are saved in ${saved}. Using them accepts the terms (${allocated.map(s => s.terms).join(', ')}); requests are logged to improve the services (${allocated.map(s => s.privacy).join(', ')}).${later}`)
+        const later = !store ? ' A headless run reads keys when it starts, so vllm-sr/auto answers from the next run.' : ''
+        const s = allocated[0]
+        lines.push(`[System Duo] One free key for vllm-sr/auto and the decision models (${new URL(s.site).host}) is saved in ${saved}. Using it accepts the terms (${s.terms}); requests are logged to improve the services (${s.privacy}).${later}`)
       }
       for (const { service, error } of failed) {
-        lines.push(`[System One] No free key from ${new URL(service.site).host} (${error.code ?? error.status ?? 'error'}: ${clip(String(error.message), 160)}). Get one at ${service.site} and save it as ${service.ref}.`)
+        lines.push(`[System Duo] No free key from ${new URL(service.site).host} (${error.code ?? error.status ?? 'error'}: ${clip(String(error.message), 160)}). Get one at ${service.site} and save it as ${service.ref}.`)
       }
       if (lines.length === 0) return
       if (!store) process.stderr.write(`${lines.join('\n')}\n`)
-      keysNotice = notice(lines.join('\n'), allocated.length ? `System One got free keys for ${allocated.map(s => s.name).join(' and ')}` : 'System One could not get a free key')
+      keysNotice = notice(lines.join('\n'), allocated.length ? 'System Duo got a free key for vllm-sr/auto and the decision models' : 'System Duo could not get a free key')
     }, error => {
       trace({ ev: 'keys', error: clip(String(error?.message ?? error), 300) })
     })

@@ -94,7 +94,7 @@ export function createDecisionClient(options) {
     const deadlineMs = limits.timeoutMs ?? timeoutMs
     const maxRetries = limits.retries ?? retries
     const key = await apiKey()
-    if (!key) throw new DecisionError(`no Decision API key: set ${options.apiKeyEnv}, or get a free one at https://decision.vllm-sr.ai`, 401, 'missing_api_key')
+    if (!key) throw new DecisionError(`no System One key: set ${options.apiKeyEnv}, or get a free System Duo key at https://app.vllm-sr.ai`, 401, 'missing_api_key')
     const payload = JSON.stringify(body)
     const headers = {
       authorization: `Bearer ${key}`,

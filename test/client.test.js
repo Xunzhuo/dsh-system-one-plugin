@@ -67,6 +67,6 @@ test('an unreachable API fails fast with the hook limits', async () => {
 test('a missing key is a clear error', async () => {
   delete process.env.S1_NO_KEY
   const client = createDecisionClient({ baseURL: 'http://127.0.0.1:9', apiKeyEnv: 'S1_NO_KEY' })
-  await assert.rejects(client.ask({ model: 'm', questions: {}, inputs: [{ state: 'x' }] }), /no Decision API key/)
+  await assert.rejects(client.ask({ model: 'm', questions: {}, inputs: [{ state: 'x' }] }), /no System One key/)
   client.close()
 })
