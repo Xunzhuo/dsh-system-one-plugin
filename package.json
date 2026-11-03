@@ -1,0 +1,58 @@
+{
+  "name": "dsh-system-one",
+  "version": "0.2.0",
+  "description": "System One for DeepSeek Harness: a fast decision model guards, shields, triages and checks your agent around its LLM. Free keys, no setup.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "agent",
+    "decision-model",
+    "guardrails",
+    "prompt-injection",
+    "vllm-semantic-router"
+  ],
+  "author": "Xunzhuo Liu",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Xunzhuo/dsh-system-one-plugin#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xunzhuo/dsh-system-one-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Xunzhuo/dsh-system-one-plugin/issues"
+  },
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.9",
+    "dsh": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

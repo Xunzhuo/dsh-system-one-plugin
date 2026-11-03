@@ -1,0 +1,29 @@
+# System One on the agent loop, and the free LLM it pairs with: vllm-sr/auto from vLLM Semantic Router
+# (mom.vllm-sr.ai). Both keys are fetched on first use. A model chosen in the app's settings still wins, and a
+# profile patch can replace either row.
+- insert:
+    - id: system-one
+      name: dsh-system-one
+
+- id: llm-pi-ai
+  config:
+    providers:
+      vllm-sr:
+        displayName: vLLM Semantic Router
+        apiKeyEnv: VLLM_SR_API_KEY
+        api: openai-completions
+        baseURL: https://mom.vllm-sr.ai/v1
+        compat:
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
+        timeoutMs: 600000
+        models:
+          - id: vllm-sr/auto
+            name: vllm-sr/auto
+            contextWindow: 131072
+            maxTokens: 32768
+
+- id: agent-default-model
+  config:
+    provider: vllm-sr
+    model: vllm-sr/auto
