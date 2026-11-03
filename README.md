@@ -21,6 +21,8 @@ dsh plugin --profile web add dsh-system-one
 dsh web
 ```
 
+The package can also come straight from GitHub: `dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
+
 On its first start the plugin gets one free key from each service, with the same small proof of work their "Get a
 key" buttons run in the browser, and saves both in DeepSeek Harness's credential store and in `~/.dsh/.env`
 (readable by you only). A notice in the session says so. `vllm-sr/auto` becomes the default model; choose another model
