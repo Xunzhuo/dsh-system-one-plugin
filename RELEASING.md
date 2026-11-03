@@ -28,8 +28,9 @@ not supported for provider: null". That keeps a publish from a laptop deliberate
 
 ## Release
 
-1. Set `version` in `package.json` (and `engines.dsh` when the supported DeepSeek Harness range changes), and merge to
-   `main`.
+1. Set `version` in `package.json`, add the version's entry to `CHANGELOG.md`, and merge to `main`. When the supported
+   DeepSeek Harness range changes, change `engines.dsh` and the `@deepseek-ai/dsh-*` peer ranges together, and the
+   `cordis` and `schemastery` ranges to the versions that harness ships.
 2. Tag the merge commit and push the tag:
 
    ```bash
