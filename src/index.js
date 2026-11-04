@@ -569,7 +569,8 @@ export function apply(ctx, config) {
   const machine = new Set([accountName(), hostname()].filter(Boolean).map(name => name.toLowerCase()))
   const personal = (span, told) => {
     const value = span.text.trim()
-    if (!sensitive.has(span.label) || machine.has(value.toLowerCase())) return false
+    // a file's owner and group are often marked together, as "dev dev"
+    if (!sensitive.has(span.label) || value.split(/\s+/).every(name => machine.has(name.toLowerCase()))) return false
     if (span.label === 'IP_ADDRESS' && LOCAL_ADDRESS.test(value.replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, ''))) return false
     return !(value.length >= 3 && told?.includes(value))
   }

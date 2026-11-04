@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 (2026-11-04)
+
+- **Privacy** leaves a file's owner and group unmasked when the span model marks them together, as `dev dev` in
+  `ls -l` output. 0.6.0 left only a lone account name, so most `ls -la` results still showed a Privacy card.
+- **The `system_one` tool**: a threshold written beside its question (`"marks_threshold": 0.4`) is that question's,
+  and a `text_field` that is not a field of the items names the fields that are, so System Two fixes its call at once.
+- **README**: install a release by its exact version. pnpm installs no release younger than a day unless it is named
+  (`minimumReleaseAge`), so a plain `@vllm-sr/dsh` gets the newest release that is a day old.
+
 ## 0.6.0 (2026-11-04)
 
 System One answers more than verdicts: the `system_one` tool marks words with labels System Two invents, finds

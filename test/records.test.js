@@ -123,9 +123,9 @@ function fakeDecisions({ delayMs = 0 } = {}) {
     const out = {}
     for (const [id, question] of Object.entries(questions)) {
       if (question.preset === 'pii') {
-        // like the real model, it also takes the machine's account name in a file listing for a person
+        // like the real model, it also takes a file's owner and group, the machine's account, for one person
         const account = userInfo().username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION'), ...spansIn(state, ` ${account} `, 'PERSON').map(span => ({ ...span, start: span.start + 1, end: span.end - 1, text: span.text.trim() })), ...spansIn(state, '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', 'IP_ADDRESS')]
+        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION'), ...spansIn(state, ` ${account} ${account} `, 'PERSON').map(span => ({ ...span, start: span.start + 1, end: span.end - 1, text: span.text.trim() })), ...spansIn(state, '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', 'IP_ADDRESS')]
       } else if (question.preset === 'halu') {
         out[id] = state.context.includes('MIT') ? [] : spansIn(state.answer, 'MIT licensed', 'unsupported')
       } else if (question.type === 'span' && question.over === 'context') {

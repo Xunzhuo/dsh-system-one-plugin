@@ -51,7 +51,7 @@ function recordText(record, textField) {
   if (typeof record === 'string') return { text: record, segments: [{ start: 0, end: record.length }] }
   const shown = value => (typeof value === 'string' ? { value } : { value: JSON.stringify(value) ?? '', json: true })
   if (textField) {
-    if (record[textField] === undefined) throw new Error(`text_field "${textField}" is not a field of the items`)
+    if (record[textField] === undefined) throw new Error(`text_field "${textField}" is not a field of the items; they have ${Object.keys(record).map(key => `"${key}"`).join(', ')}`)
     const { value, json } = shown(record[textField])
     return { text: value, segments: [{ field: textField, start: 0, end: value.length, ...(json ? { json } : {}) }] }
   }

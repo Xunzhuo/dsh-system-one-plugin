@@ -420,6 +420,10 @@ test('a label set written as a choice is asked as a span question, and a type be
   assert.deepEqual(Object.fromEntries(Object.entries(written).map(([id, question]) => [id, question.type])), { COMPETITOR: 'span', ERROR: 'span', team: 'choice', tone: 'choice' })
   assert.deepEqual(written.ERROR, { type: 'span', criteria: { ERROR: 'an error code', LIMIT: 'a quota number' }, instructions: 'Mark the words of error codes the customer quotes.' })
 
+  // a threshold written beside its question
+  assert.deepEqual(parseQuestions({ marks: { type: 'span', criteria: ['ERROR'] }, marks_threshold: 0.4 }), { marks: { type: 'span', criteria: ['ERROR'], threshold: 0.4 } })
+  assert.throws(() => parseQuestions({ marks: { type: 'span', criteria: ['ERROR'] }, other_threshold: 0.4 }), /question "other_threshold" must be an object/)
+
   const typed = parseQuestions({ type: 'span', ERROR: { criteria: { ERROR: 'an error code' } }, team: { type: 'choice', instructions: 'Team?', criteria: { a: 'A', b: 'B' } } })
   assert.deepEqual([typed.ERROR.type, typed.team.type, typed.type], ['span', 'choice', undefined])
   assert.throws(() => parseQuestions({ type: 'span' }), /questions must be an object of question id/)
@@ -437,6 +441,11 @@ test('grounded items share requests only as far as the token estimate allows, an
   assert.ok(asked.length >= 2, 'three items of about 22,000 bytes, two questions each, take more than one request')
   const many = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`label${i}`, { type: 'span', criteria: [`L${i}`] }]))
   await assert.rejects(run({ questions: { ...many, unsupported: { preset: 'halu' } }, file: 'draft.md', sources: ['CHANGELOG.md'] }), /are more than one request may read/)
+})
+
+test('a text field that is not there names the fields that are', async t => {
+  const { run } = await setup(t, { 'tickets.jsonl': '{"id":"T-1","subject":"Export fails","body":"HTTP 504 on export"}\n' })
+  await assert.rejects(run({ questions: { marks: { type: 'span', criteria: ['ERROR'] } }, file: 'tickets.jsonl', text_field: 'text' }), /text_field "text" is not a field of the items; they have "id", "subject", "body"/)
 })
 
 test('a question that fails for its items says why, once', async t => {

@@ -65,6 +65,14 @@ export function parseQuestions(value) {
     questions = Object.fromEntries(Object.entries(rest).map(([id, question]) => [id, question && typeof question === 'object' && !Array.isArray(question) && question.type === undefined ? { ...question, type } : question]))
     if (Object.keys(questions).length === 0) throw new Error('questions must be an object of question id -> {type, instructions, criteria}')
   }
+  // a threshold written beside its question, as {"marks": {...}, "marks_threshold": 0.5}, is that question's
+  for (const [id, value] of Object.entries(questions)) {
+    const owner = id.endsWith('_threshold') ? id.slice(0, -'_threshold'.length) : undefined
+    if (typeof value === 'number' && owner && questions[owner] && typeof questions[owner] === 'object' && !Array.isArray(questions[owner])) {
+      questions = { ...questions, [owner]: { threshold: value, ...questions[owner] } }
+      delete questions[id]
+    }
+  }
   const out = {}
   for (const [id, asked] of Object.entries(questions)) {
     if (!asked || typeof asked !== 'object' || Array.isArray(asked)) throw new Error(`question "${id}" must be an object`)
