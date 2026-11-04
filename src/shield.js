@@ -59,7 +59,8 @@ async function scoreAll(client, model, questions, states, signal, limits = {}) {
  * @param {number} options.threshold
  * @param {number} options.chunkChars
  * @param {AbortSignal} [options.signal]
- * @returns {Promise<{model: string, passages: number, flagged: object[], removed: Array<{start: number, end: number, p: number}>, removedLines: number, text: string}>}
+ * @returns {Promise<{model: string, passages: number, maxP: number, flagged: object[], removed: Array<{start: number, end: number, p: number}>, removedLines: number, text: string}>}
+ *   `maxP` is the highest injection probability of any passage
  */
 export async function screen({ client, model, prefix, text, threshold, chunkChars, signal, timeoutMs, retries }) {
   const lines = text.split('\n')
@@ -122,6 +123,7 @@ export async function screen({ client, model, prefix, text, threshold, chunkChar
   return {
     model: first.model,
     passages: ranges.length,
+    maxP: first.scores.reduce((max, p) => Math.max(max, p), 0),
     flagged: flagged.map(entry => ({
       p: entry.p,
       text: lines.slice(entry.from, entry.to).join('\n'),

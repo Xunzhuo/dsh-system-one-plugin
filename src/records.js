@@ -1,0 +1,56 @@
+/**
+ * System One in the conversation. Every decision System One makes during a turn (triage, guard, shield, done-check)
+ * is written to the session as one plugin record: an ignorable event beside the events it judged, which the model
+ * never sees and other readers skip. The plugin's browser half (web/client.js) draws each record in the Web UI's Chat.
+ * Records carry what the Decision API answered (model, latency, answers) and what the plugin did with it.
+ */
+import { clip, redact } from './trace.js'
+
+export const RECORD_TYPE = 'plugin:vllm-sr/dsh/system-one'
+export const RECORD_VERSION = 1
+export const UI_MODES = ['card', 'compact', 'off']
+
+/** A copy that survives a JSON round trip unchanged: the session log refuses undefined, NaN and -0. */
+export function jsonSafe(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+/** A tool call's subject as the cards show it, clipped and with secret-shaped strings redacted. */
+export function subject(text, max = 200) {
+  return redact(clip(text, max))
+}
+
+/**
+ * @param {object} options
+ * @param {((session: object, type: string, data: object) => unknown) | undefined} options.append - DeepSeek
+ *   Harness's appendPluginRecord; without it nothing is recorded
+ * @param {'card' | 'compact' | 'off'} options.ui - how the Web UI draws the records; off records nothing
+ * @param {(error: unknown) => void} [options.onError] - a record that could not be written; the step goes on
+ * @returns {(session: object | undefined, decision: object) => boolean} writes one record, true when it was written
+ */
+export function createRecorder({ append, ui, onError }) {
+  if (ui === 'off' || typeof append !== 'function') return () => false
+  return function record(session, decision) {
+    if (!session) return false
+    try {
+      append(session, RECORD_TYPE, jsonSafe({ v: RECORD_VERSION, ui, ...decision }))
+      return true
+    } catch (error) {
+      onError?.(error)
+      return false
+    }
+  }
+}
+
+/**
+ * What became of a call the guard asked about, read from the call's final result: the harness turns a rejected or
+ * cancelled approval into an error whose message says so.
+ * @returns {'allowed' | 'rejected' | 'cancelled' | 'failed'}
+ */
+export function approvalOutcome(result) {
+  if (!result?.isError) return 'allowed'
+  const message = String(result.error?.message ?? '')
+  if (/\bthe user rejected tool\b/.test(message)) return 'rejected'
+  if (/\bapproval for tool\b.*\bwas cancelled\b|\bno approval channel\b/.test(message)) return 'cancelled'
+  return 'failed'
+}

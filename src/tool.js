@@ -128,13 +128,22 @@ function renderSummary(value) {
   return lines.join('\n')
 }
 
+/** The result's facts as the Web UI's system_one row draws them (web/client.js), kept on the call's result. */
+export function presentation(value, ui) {
+  if (ui === 'off') return { systemOne: 1, ui }
+  const { model, items, questions, requests, seconds, output, summary } = value
+  return { systemOne: 1, ui, model, items, questions, requests, seconds, output, summary }
+}
+
 /**
  * @param {object} deps
  * @param {ReturnType<import('./client.js').createDecisionClient>} deps.client
  * @param {(entry: object) => void} deps.trace
  * @param {object} deps.config
+ * @param {(exec: object) => Promise<string>} [deps.workspaceOf] - the calling session's working directory, which
+ *   relative paths resolve against
  */
-export function systemOneTool({ client, trace, config }) {
+export function systemOneTool({ client, trace, config, workspaceOf = async () => process.cwd() }) {
   return defineTool({
     name: config.toolName,
     description: DESCRIPTION,
@@ -152,10 +161,11 @@ export function systemOneTool({ client, trace, config }) {
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_args, value) => [{ type: 'text', text: renderSummary(value) }],
+      presentationMeta: (_args, value) => presentation(value, config.systemOneUi),
     },
     async execute(args, exec) {
       const questions = parseQuestions(args.questions)
-      const cwd = process.cwd()
+      const cwd = await workspaceOf(exec)
       const file = args.file ? resolve(cwd, args.file) : undefined
       const images = args.images?.map(path => resolve(cwd, path))
       const items = await loadItems({
@@ -166,6 +176,7 @@ export function systemOneTool({ client, trace, config }) {
         idField: args.id_field,
         maxItems: config.toolMaxItems,
         maxChars: config.toolMaxChars,
+        cwd,
       })
       const model = args.model || config.model
       const context = args.context?.trim()

@@ -62,16 +62,17 @@ function recordId(record, idField, index) {
 }
 
 /**
+ * @param {object} options - `cwd` is the directory image sources are shown relative to
  * @returns {Promise<Array<{id: string, text: string, images?: string[], source?: string}>>}
  */
-export async function loadItems({ file, items, images, textField, idField, maxItems, maxChars }) {
+export async function loadItems({ file, items, images, textField, idField, maxItems, maxChars, cwd = process.cwd() }) {
   const out = []
   if (images?.length) {
     for (const [index, path] of images.entries()) {
       const type = IMAGE_TYPES[extname(path).toLowerCase()]
       if (!type) throw new Error(`unsupported image type: ${path} (use PNG, JPEG or WebP)`)
       const data = await readFile(path)
-      out.push({ id: path.split('/').pop() ?? String(index + 1), text: '', images: [`data:${type};base64,${data.toString('base64')}`], source: relative(process.cwd(), path) || path })
+      out.push({ id: path.split('/').pop() ?? String(index + 1), text: '', images: [`data:${type};base64,${data.toString('base64')}`], source: relative(cwd, path) || path })
     }
   }
   if (file) {

@@ -55,6 +55,30 @@ of your profile patch stay as they are.
 | Done-check | `agent/turn-stopping` | complete?, checked?, waiting for you? | an unfinished turn goes back once or twice to finish and verify |
 | Tool | `system_one` | any rubric the LLM writes, over a file of items or images | one result row per item (JSONL or CSV) and a summary |
 
+## See it in the Web UI
+
+In `dsh web`, System One shows up in the conversation itself, where it acted, marked with an ember **System One**
+badge that carries the decision's latency:
+
+- **Triage**: a card under your request with the kind of work, the effort, how unclear and how risky it is, and the
+  brief System Two was given.
+- **Guard**: a line beside each reviewed call with its verdict and risk. A call that was blocked or sent to you for
+  approval becomes a card with the reason, and with your answer once you give it.
+- **Shield**: a line after each screened tool result. A result that tried to give the agent orders becomes a card
+  that says how many lines were removed.
+- **Done-check**: a card after the answer: done, waiting on you, or sent back to finish.
+- **`system_one` tool**: its row shows the batch: items, questions, each question's answer distribution and the
+  results file.
+
+Routine checks (an allowed call, a clean result) are one line and fold with the turn's work. Cards stay visible when
+the work folds, so a finished turn still shows what System One decided. Parallel calls in one step share one line or
+card, and every decision pops in with a short animation the first time it appears (none with reduced motion). Each
+element shows the Decision API's own answer: the probabilities, the model and the measured latency.
+
+Every element carries `data-system-one` (`card`, `compact` or `tool`), `data-system-one-reflex` (`triage`, `guard`,
+`shield`, `done` or `tool`) and `data-system-one-verdict`, for tests and screen recordings. Set `systemOneUi` to
+`compact` for one line per decision, or to `off` to hide them.
+
 ## Your data
 
 System One sends what it decides about: the user's request (clipped), each tool call it reviews, the passages of tool
@@ -65,6 +89,11 @@ private code or data. Each reflex can be turned off.
 
 The local trace (`~/.dsh/system-one/trace.jsonl`, readable by you only) records every decision with its probabilities
 and redacts secret-shaped strings; it never records keys. Set `trace: off` to disable it.
+
+For the Web UI, each decision is also written to the session's own log as a plugin record
+(`plugin:vllm-sr/dsh/system-one`): its answers, model, latency and verdict, and the reviewed call in short with
+secret-shaped strings redacted. The model never sees these records, other clients skip them, and they stay with the
+session when it is resumed or forked. `systemOneUi: off` writes none.
 
 ## Configuration
 
@@ -86,7 +115,11 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
     doneCheck: true
     tool: true
     trace: ~/.dsh/system-one/trace.jsonl   # or off
+    systemOneUi: card              # how Chat shows System One: card, compact (one line each) or off
 ```
+
+`systemOneUi` applies to decisions made after a restart with the new value; decisions already in a session keep the
+form they were recorded with. The tool's custom row is drawn for the default `toolName`, `system_one`.
 
 The key comes from the credential reference `VLLM_SR_API_KEY` (`llmKeyEnv`), which both systems use. A separate
 System One key in `DECISION_API_KEY` (`apiKeyEnv`), as plugin 0.2 kept it, still wins for System One; a 0.2 key for
