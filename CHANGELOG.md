@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.10 (2026-11-05)
+
+- **The results never take the place of the input or of the redacted copy.** Marking the demo's 230 tickets, System
+  Two gave one path for both the results and the redacted copy: the copy was written, then the results replaced it,
+  while the card still named the copy. A call whose results or copy would land on the input file, or on each other, is
+  now refused before System One is asked; until now an `output` naming the input file overwrote it with the results.
+
 ## 0.6.9 (2026-11-05)
 
 - **A safety signal's results keep the flagged words out.** Asked to flag jailbreaks and harmful requests in the

@@ -234,6 +234,15 @@ test('a batch waits out a spent per-minute budget instead of failing', async t =
   assert.deepEqual([value.summary.broken.yes, value.summary.broken.no, value.summary.broken.failed], [1, 1, 0])
 })
 
+test('the results and the redacted copy never take the place of the input or of each other', async t => {
+  const { asked, run } = await setup(t, { 'notes.txt': 'first: ERR_QUOTA again\n' })
+  const errors = { errors: { type: 'span', criteria: ['ERROR'] } }
+  await assert.rejects(run({ questions: errors, file: 'notes.txt', output: 'notes.txt' }), /give it a path other than the input file/)
+  await assert.rejects(run({ questions: errors, file: 'notes.txt', redact: 'notes.txt' }), /give it a path other than the input file/)
+  await assert.rejects(run({ questions: errors, file: 'notes.txt', output: 'marked.jsonl', redact: 'marked.jsonl' }), /give it a path other than output/)
+  assert.equal(asked.length, 0, 'refused before System One is asked')
+})
+
 test('redact masks custom labels when no pii question is asked, writes inline items to a text file, and never overwrites its input', async t => {
   const { workspace, run } = await setup(t, { 'notes.txt': 'first: ERR_QUOTA again\n\n  then HTTP 502 $& done\n' })
   const value = await run({ questions: { errors: { type: 'span', criteria: ['ERROR'] } }, file: 'notes.txt', redact: 'clean/notes.txt' })

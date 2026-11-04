@@ -298,6 +298,15 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       const cwd = await workspaceOf(exec)
       const file = args.file ? resolve(cwd, args.file) : undefined
       const images = args.images?.map(path => resolve(cwd, path))
+      // the results and the redacted copy each take a file of their own, never the input's
+      const output = resolve(cwd, args.output || defaultOutput(cwd, file, images))
+      if (output === file) throw new Error('output is where the results go: give it a path other than the input file')
+      const copies = args.redact !== undefined && args.redact !== false && args.redact !== 'false' && args.redact !== null
+      const copyTo = !copies ? undefined : typeof args.redact === 'string' && args.redact !== 'true'
+        ? resolve(cwd, args.redact)
+        : file ? `${file.slice(0, file.length - extname(file).length)}.redacted${extname(file)}` : resolve(cwd, 'system-one-redacted.txt')
+      if (copyTo && copyTo === file) throw new Error('redact writes a copy: give it a path other than the input file')
+      if (copyTo && copyTo === output) throw new Error('redact writes a copy beside the results: give it a path other than output')
       const items = await loadItems({
         file,
         items: args.items,
@@ -433,7 +442,7 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       if (Object.values(questions).some(question => SAFETY_SIGNALS.has(question.signal))) for (const row of rows) delete row.text
 
       let redacted
-      if (args.redact !== undefined && args.redact !== false && args.redact !== 'false' && args.redact !== null) {
+      if (copies) {
         // personal data when the call looks for it, else what its own labels mark
         const marks = Object.entries(questions).filter(([id, question]) => asked[id].kind === 'span' && question.preset !== 'halu' && question.preset !== 'evidence')
         const personal = marks.filter(([, question]) => question.preset === 'pii')
@@ -441,9 +450,7 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         if (marking.length === 0 || parts) throw new Error('redact replaces what span questions mark in each item\'s text: ask preset pii or a span question with your labels, without sources or state_fields')
         const cut = items.find(item => item.cut)
         if (cut) throw new Error(`item ${cut.id} is longer than ${config.toolMaxChars} characters, and redact needs each item whole`)
-        const named = typeof args.redact === 'string' && args.redact !== 'true' ? resolve(cwd, args.redact) : undefined
-        const out = named ?? (file ? `${file.slice(0, file.length - extname(file).length)}.redacted${extname(file)}` : resolve(cwd, 'system-one-redacted.txt'))
-        if (out === file) throw new Error('redact writes a copy: give it a path other than the input file')
+        const out = copyTo
         let spanCount = 0
         let changed = 0
         const records = items.map((item, index) => {
@@ -479,7 +486,6 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         }
       }
 
-      const output = resolve(cwd, args.output || defaultOutput(cwd, file, images))
       await mkdir(dirname(output), { recursive: true })
       await writeResults(output, rows, questions, asked)
       const summary = summarize(questions, rows, asked)
