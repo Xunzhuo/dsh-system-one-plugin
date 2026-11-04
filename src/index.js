@@ -9,7 +9,7 @@
  * - done:   agent/turn-stopping  is the work really finished and checked?
  * - tool:   system_one           one rubric over many items, for the LLM to call
  *
- * On first use it gets one free System Duo key (app.vllm-sr.ai) for vllm-sr/auto and the decision models (keys.js).
+ * On first use it gets a free System Duo key (app.vllm-sr.ai) for vllm-sr/auto and the decision models (keys.js).
  * Each decision is also recorded in the session (records.js), and the browser half (web/client.js) draws it in Chat.
  */
 import { homedir } from 'node:os'
@@ -19,7 +19,7 @@ import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import * as dshSession from '@deepseek-ai/dsh-session'
 import { createDecisionClient, compactAnswer, yes } from './client.js'
-import { SERVICES, appendDotenv, ensureKeys, readDotenv } from './keys.js'
+import { SERVICES, appendDotenv, describeKeys, ensureKeys, readDotenv } from './keys.js'
 import { DONE, EFFORT_LEVELS, GUARD, RISK_LEVELS, TRIAGE } from './questions.js'
 import { UI_MODES, approvalOutcome, createRecorder, relativeTo, subject } from './records.js'
 import { screen } from './shield.js'
@@ -125,7 +125,9 @@ function briefCall(exec) {
 export function apply(ctx, config) {
   let credentials
   let keysReady
+  let keysSettled = false
   let keysNotice
+  let keysRecord
   const keysAbort = new AbortController()
   // DeepSeek Harness's user dotenv: the credential store falls back to it, and a headless run reads it at launch
   const envFile = join(process.env.DSH_HOME || join(homedir(), '.dsh'), '.env')
@@ -161,7 +163,7 @@ export function apply(ctx, config) {
     if (!id) return undefined
     let state = sessions.get(id)
     if (!state) {
-      state = { id, user: '', calls: [], assistant: '', steers: 0, triage: undefined, turn: 0, step: 0, asked: new Map(), pendingTriage: undefined }
+      state = { id, user: '', calls: [], assistant: '', steers: 0, triage: undefined, turn: 0, step: 0, asked: new Map(), pendingTriage: undefined, pendingKey: undefined }
       sessions.set(id, state)
     }
     return state
@@ -192,24 +194,15 @@ export function apply(ctx, config) {
       return ensureKeys({ resolve, store: keep, services, label: config.keyLabel, signal: keysAbort.signal })
     })().then(({ allocated, failed }) => {
       trace({ ev: 'keys', store: Boolean(store), allocated: allocated.map(s => s.site), failed: failed.map(f => ({ site: f.service.site, code: f.error.code, message: clip(String(f.error.message), 200) })) })
-      const lines = []
-      if (allocated.length) {
-        const saved = store ? `DeepSeek Harness's credential store and ${where}` : `${where}`
-        const later = !store ? ' A headless run reads keys when it starts, so vllm-sr/auto answers from the next run.' : ''
-        const s = allocated[0]
-        lines.push(`[System Duo] One free key for vllm-sr/auto and the decision models (${new URL(s.site).host}) is saved in ${saved}. Using it accepts the terms (${s.terms}); requests are logged to improve the services and to train models (${s.privacy}).${later}`)
-      }
-      for (const { service, error } of failed) {
-        if (keysAbort.signal.aborted) continue
-        // a DOMException's code is a legacy number (20 for an abort, 23 for a timeout); its name says what happened
-        const why = typeof error.code === 'number' ? error.name : error.code ?? error.status ?? 'error'
-        lines.push(`[System Duo] No free key from ${new URL(service.site).host} (${why}: ${clip(String(error.message), 160)}). Get one at ${service.site} and save it as ${service.ref}.`)
-      }
-      if (lines.length === 0) return
-      if (!store) process.stderr.write(`${lines.join('\n')}\n`)
-      keysNotice = notice(lines.join('\n'), allocated.length ? 'System Duo got a free key for vllm-sr/auto and the decision models' : 'System Duo could not get a free key')
+      const said = describeKeys({ allocated, failed: keysAbort.signal.aborted ? [] : failed }, { file: where, store: Boolean(store) })
+      if (!said) return
+      if (!store) process.stderr.write(`${said.text}\n`)
+      keysNotice = notice(said.text, said.summary)
+      keysRecord = said.record
     }, error => {
       trace({ ev: 'keys', error: clip(String(error?.message ?? error), 300) })
+    }).finally(() => {
+      keysSettled = true
     })
   }
 
@@ -222,10 +215,13 @@ export function apply(ctx, config) {
     startKeys(scoped.credentials)
   })
 
-  function withNotices(decision, messages) {
+  // Chat hides notices, so the keys' one also goes to the session as a record that Chat draws under the request.
+  function withNotices(decision, messages, state, agent) {
     if (decision.kind !== 'enter') return decision
     const extra = [keysNotice, ...messages].filter(Boolean)
+    if (keysNotice && keysRecord && state && agent?.session) state.pendingKey = { session: agent.session, data: { ...keysRecord, turn: state.turn, step: state.step } }
     keysNotice = undefined
+    keysRecord = undefined
     return extra.length === 0 ? decision : { ...decision, messages: [...decision.messages, ...extra] }
   }
 
@@ -254,10 +250,11 @@ export function apply(ctx, config) {
   const AFTER_REQUEST = new Set(['request/header', 'request/context', 'assistant/message', 'step/end', 'turn/end'])
   ctx.on('session/event', (session, event) => {
     const state = sessions.get(session?.id)
-    const pending = state?.pendingTriage
-    if (pending && ((event?.type === 'user/message' && event.data?.source?.kind === 'user') || AFTER_REQUEST.has(event?.type))) {
+    const pending = [state?.pendingKey, state?.pendingTriage].filter(Boolean)
+    if (pending.length && ((event?.type === 'user/message' && event.data?.source?.kind === 'user') || AFTER_REQUEST.has(event?.type))) {
+      state.pendingKey = undefined
       state.pendingTriage = undefined
-      queueMicrotask(() => record(pending.session, pending.data))
+      queueMicrotask(() => pending.forEach(entry => record(entry.session, entry.data)))
     }
     if (event?.type !== 'assistant/message') return
     const text = textOf(event.data?.message?.content)
@@ -289,7 +286,7 @@ export function apply(ctx, config) {
   // Triage: one look at each new user request before the model sees it.
   ctx.on('agent/pre-step', async (payload, next) => {
     if (!keysReady && !credentials) startKeys(undefined)
-    if (keysReady) await Promise.race([keysReady, sleep(KEYS_WAIT_MS)])
+    if (keysReady && !keysSettled) await Promise.race([keysReady, sleep(KEYS_WAIT_MS, undefined, { ref: false })])
     const { agent, messages, signal, turn, step } = payload
     const userMessages = messages.filter(message => message.source?.kind === 'user')
     const state = sessionState(agent)
@@ -302,7 +299,7 @@ export function apply(ctx, config) {
     state.calls = []
     state.steers = 0
     trace({ ev: 'user', session: state.id, turn, text: clip(state.user, 4000) })
-    if (!config.triage || !state.user) return withNotices(await next(), [])
+    if (!config.triage || !state.user) return withNotices(await next(), [], state, agent)
     let brief
     try {
       const response = await client.ask({ model: config.model, questions: TRIAGE, inputs: [{ state: clip(state.user, 12000) }], signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
@@ -326,7 +323,7 @@ export function apply(ctx, config) {
       trace({ ev: 's1', reflex: 'triage', session: state.id, turn, error: String(error?.message ?? error) })
       if (!signal?.aborted) state.pendingTriage = { session: agent.session, data: { reflex: 'triage', turn, step, error: subject(error?.message ?? error) } }
     }
-    return withNotices(await next(), [brief])
+    return withNotices(await next(), [brief], state, agent)
   })
 
   // Guard: every side-effecting call is reviewed before it runs.

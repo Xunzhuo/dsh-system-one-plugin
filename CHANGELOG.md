@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2 (2026-11-04)
+
+- Chat names System One's model in full and in bold, as **vllm-sr/d3-ultra**: in a card's head, in a one-line element
+  once you open it, and in the batch row. Each element's root also carries it, as `data-system-one-model`.
+- The free-key notice says plainly what happened: "Free API key created for app.vllm-sr.ai, saved in ~/.dsh/.env",
+  with the terms, or why the site refused one. Chat hides notices, so it is also a **System Duo** line under your first
+  request, which stays when the turn folds (`[data-system-one="notice"]`, verdict `created` or `failed`).
+- A step no longer starts a 20-second timer once the free key is settled.
+
 ## 0.4.1 (2026-11-04)
 
 - The install lines work on a clean machine. `dsh plugin add` installs plugins with pnpm, and Node 26, the current

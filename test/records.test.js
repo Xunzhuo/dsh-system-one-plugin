@@ -275,6 +275,51 @@ test('a question without a type takes the one its criteria imply', async () => {
   assert.throws(() => parseQuestions({ odd: { type: 'boolean', instructions: 'Is it?' } }), /question "odd" needs type choice, noul, score or box/)
 })
 
+test('a key the start created is told under the request, and Chat gets it as a record before the triage', async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const home = await mkdtemp(join(tmpdir(), 's1-dsh-home-'))
+  const before = { home: process.env.DSH_HOME, fetch: globalThis.fetch }
+  // the key goes to $DSH_HOME/.env: a temporary one, never the real ~/.dsh
+  process.env.DSH_HOME = home
+  const site = []
+  globalThis.fetch = async (url, init) => {
+    site.push(String(url))
+    const json = (status, data) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } })
+    if (String(url) === 'https://app.vllm-sr.ai/api/keys/challenge') return json(200, { challenge: 'v1.test.1.0', difficulty: 1, algorithm: 'sha256' })
+    if (String(url) === 'https://app.vllm-sr.ai/api/keys') return json(201, { api_key: `sk-vsr-${'T'.repeat(43)}` })
+    return before.fetch(url, init)
+  }
+  const { server, url } = await fakeDecisions()
+  const plugin = await import('../src/index.js')
+  const { ctx, config, handlers, agent, close } = harness(url, { autoKeys: true })
+  t.after(async () => {
+    close()
+    server.close()
+    globalThis.fetch = before.fetch
+    if (before.home === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = before.home
+    await rm(home, { recursive: true, force: true })
+  })
+  plugin.apply(ctx, config)
+  const user = { role: 'user', content: [{ type: 'text', text: 'Fix the failing test' }], source: { kind: 'user' } }
+  const decision = await handlers.get('agent/pre-step')({ agent, messages: [user], turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+  assert.deepEqual(site, ['https://app.vllm-sr.ai/api/keys/challenge', 'https://app.vllm-sr.ai/api/keys'])
+  const said = decision.messages.map(message => message.content[0].text)
+  assert.ok(said[0].startsWith(`[System Duo] Free API key created for app.vllm-sr.ai, saved in ${join(home, '.env')}.`), said[0])
+  assert.ok(said.every(text => !/one free key/i.test(text)))
+  assert.equal(agent.session.records.length, 0, 'nothing is written before the request it follows is logged')
+  handlers.get('session/event')(agent.session, { type: 'user/message', data: user })
+  await Promise.resolve()
+  assert.deepEqual(agent.session.records.map(entry => [entry.data.reflex, entry.data.verdict ?? null]), [['key', 'created'], ['triage', null]])
+  assert.deepEqual(agent.session.records[0].data, { v: 1, ui: 'card', reflex: 'key', verdict: 'created', site: 'app.vllm-sr.ai', saved: join(home, '.env'), store: false, terms: 'https://app.vllm-sr.ai/terms', privacy: 'https://app.vllm-sr.ai/privacy', turn: 1, step: 1 })
+
+  // the notice is told once
+  const next = await handlers.get('agent/pre-step')({ agent, messages: [{ ...user, content: [{ type: 'text', text: 'And the docs' }] }], turn: 2, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+  assert.ok(next.messages.every(message => !message.content[0].text.startsWith('[System Duo]')))
+})
+
 test('systemOneUi off writes no records and keeps the reflexes working', async t => {
   process.env.S1_RECORDS_KEY = 'sk-vsr-test'
   const { server, url } = await fakeDecisions()

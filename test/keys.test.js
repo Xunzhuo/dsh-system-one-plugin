@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { appendDotenv, ensureKeys, leadingZeroBits, readDotenv, requestKey, solve } from '../src/keys.js'
+import { SERVICES, appendDotenv, describeKeys, ensureKeys, leadingZeroBits, readDotenv, requestKey, solve } from '../src/keys.js'
 
 function bits(challenge, nonce) {
   return leadingZeroBits(createHash('sha256').update(`${challenge}:${nonce}`).digest())
@@ -48,6 +48,25 @@ async function fakeSite({ difficulty = 8, expireFirst = false, limited = false, 
     close: () => new Promise(resolve => server.close(resolve)),
   }
 }
+
+test('the keys notice says plainly what happened, and gives Chat a record to draw', () => {
+  const [service] = SERVICES
+  const made = describeKeys({ allocated: [service], failed: [] }, { file: '~/.dsh/.env', store: true })
+  assert.equal(made.text, "[System Duo] Free API key created for app.vllm-sr.ai, saved in DeepSeek Harness's credential store and ~/.dsh/.env. Using it accepts the terms (https://app.vllm-sr.ai/terms); requests are logged to improve the services and to train models (https://app.vllm-sr.ai/privacy).")
+  assert.equal(made.summary, 'Free API key created for app.vllm-sr.ai')
+  assert.deepEqual(made.record, { reflex: 'key', verdict: 'created', site: 'app.vllm-sr.ai', saved: '~/.dsh/.env', store: true, terms: service.terms, privacy: service.privacy })
+  assert.match(describeKeys({ allocated: [service], failed: [] }, { file: '~/.dsh/.env', store: false }).text, /saved in ~\/\.dsh\/\.env\. .* A headless run reads keys when it starts/)
+
+  const limited = Object.assign(new Error('too many keys created from this network address; try again later'), { code: 'key_creation_limited' })
+  const refused = describeKeys({ allocated: [], failed: [{ service, error: limited }] }, { file: '~/.dsh/.env', store: true })
+  assert.equal(refused.text, '[System Duo] No free API key from app.vllm-sr.ai (key_creation_limited: too many keys created from this network address; try again later). Get one at https://app.vllm-sr.ai and save it as VLLM_SR_API_KEY.')
+  assert.equal(refused.summary, 'No free API key from app.vllm-sr.ai')
+  assert.deepEqual(refused.record, {
+    reflex: 'key', verdict: 'failed', site: 'app.vllm-sr.ai', url: 'https://app.vllm-sr.ai', ref: 'VLLM_SR_API_KEY',
+    error: { code: 'key_creation_limited', message: 'too many keys created from this network address; try again later' },
+  })
+  assert.equal(describeKeys({ allocated: [], failed: [] }, { file: '~/.dsh/.env', store: true }), undefined)
+})
 
 test('the solver finds a nonce with enough zero bits', async () => {
   const nonce = await solve('v1.example.12', 12)

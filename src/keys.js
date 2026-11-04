@@ -1,7 +1,7 @@
 /**
- * The free System Duo key (app.vllm-sr.ai): one key for both vllm-sr/auto, the LLM (System Two), and the
- * decision models (System One). The site hands it out for a small proof of work, the same one its "Get your API
- * key" button runs in the browser; the key is kept in DeepSeek Harness's credential store.
+ * The free System Duo key (app.vllm-sr.ai), which both vllm-sr/auto, the LLM (System Two), and the decision models
+ * (System One) take. The site hands it out for a small proof of work, the same one its "Get your API key" button runs
+ * in the browser; the key is kept in DeepSeek Harness's credential store.
  */
 import { createHash, hash as oneShot } from 'node:crypto'
 import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
@@ -171,4 +171,41 @@ export async function ensureKeys({ resolve, store, services = SERVICES, label, f
     }
   }))
   return { allocated, failed }
+}
+
+/**
+ * What the session says about the keys a start fetched: the notice the model reads (and Trajectory shows), and the
+ * record Chat draws as an inline line.
+ * @param {object} outcome - ensureKeys' result
+ * @param {object} where
+ * @param {string} where.file - the dotenv file the key went to, as the user writes it (~/.dsh/.env)
+ * @param {boolean} where.store - whether DeepSeek Harness's credential store holds it too
+ * @returns {{text: string, summary: string, record: object} | undefined} nothing when no key was fetched or refused
+ */
+export function describeKeys({ allocated, failed }, { file, store }) {
+  const host = site => new URL(site).host
+  const lines = []
+  if (allocated.length) {
+    const s = allocated[0]
+    const saved = store ? `DeepSeek Harness's credential store and ${file}` : file
+    const later = store ? '' : ' A headless run reads keys when it starts, so vllm-sr/auto answers from the next run.'
+    lines.push(`[System Duo] Free API key created for ${host(s.site)}, saved in ${saved}. Using it accepts the terms (${s.terms}); requests are logged to improve the services and to train models (${s.privacy}).${later}`)
+  }
+  const refused = failed.map(({ service, error }) => {
+    // a DOMException's code is a legacy number (20 for an abort, 23 for a timeout); its name says what happened
+    const why = typeof error.code === 'number' ? error.name : error.code ?? error.status ?? 'error'
+    const message = String(error.message).slice(0, 160)
+    lines.push(`[System Duo] No free API key from ${host(service.site)} (${why}: ${message}). Get one at ${service.site} and save it as ${service.ref}.`)
+    return { service, why, message }
+  })
+  if (lines.length === 0) return undefined
+  const s = allocated[0]
+  const record = s
+    ? { reflex: 'key', verdict: 'created', site: host(s.site), saved: file, store, terms: s.terms, privacy: s.privacy }
+    : { reflex: 'key', verdict: 'failed', site: host(refused[0].service.site), url: refused[0].service.site, ref: refused[0].service.ref, error: { code: String(refused[0].why), message: refused[0].message } }
+  return {
+    text: lines.join('\n'),
+    summary: s ? `Free API key created for ${host(s.site)}` : `No free API key from ${host(refused[0].service.site)}`,
+    record,
+  }
 }

@@ -11,8 +11,8 @@ agent orders, is the work really done, which team should get each of these 230 t
 - **System One**, the decision model, decides: `vllm-sr/d3-ultra`. It answers typed questions (choice, yes/no, score,
   box) with probabilities, from one forward pass per question instead of generated text.
 
-Both come from [System Duo](https://app.vllm-sr.ai) with one free key, and the plugin gets that key for you: System One
-answers at `https://app.vllm-sr.ai/v1/systemone`, and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
+Both take a free [System Duo](https://app.vllm-sr.ai) key, which the plugin gets for you: System One answers at `https://app.vllm-sr.ai/v1/systemone`,
+and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ## Quick start
 
@@ -26,9 +26,10 @@ The first line installs DeepSeek Harness (0.2.1-rc.5 or a later 0.2 release, on 
 `dsh plugin` uses to install plugins; without pnpm, `dsh plugin add` stops with "pnpm was not found". On a machine
 with git, the package can also come straight from GitHub: `dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
 
-On its first start the plugin gets one free System Duo key, with the same small proof of work the site's "Get your
-API key" button runs in the browser, and saves it in DeepSeek Harness's credential store and in `~/.dsh/.env` (readable
-by you only). A notice in the session says so. `vllm-sr/auto` becomes the default model; choose another model
+On its first start the plugin gets a free System Duo key, with the same small proof of work the site's "Get your API
+key" button runs in the browser, and saves it in DeepSeek Harness's credential store and in `~/.dsh/.env` (readable
+by you only). A line under your first request says so: "Free API key created for app.vllm-sr.ai, saved in
+~/.dsh/.env", or why the site refused one. `vllm-sr/auto` becomes the default model; choose another model
 in the app and System One keeps working beside it.
 
 Headless:
@@ -70,11 +71,13 @@ badge that carries the decision's latency:
 - **Done-check**: a card after the answer: done, waiting on you, or sent back to finish.
 - **`system_one` tool**: its row shows the batch: items, questions, each question's answer distribution and the
   results file.
+- **Free key**: a **System Duo** line under your first request when the plugin created a key, or could not.
 
 Routine checks (an allowed call, a clean result) are one line and fold with the turn's work. Cards stay visible when
 the work folds, so a finished turn still shows what System One decided. Parallel calls in one step share one line or
 card, and every decision pops in with a short animation the first time it appears (none with reduced motion). Each
-element shows the Decision API's own answer: the probabilities, the model and the measured latency.
+element shows the Decision API's own answer: the probabilities, the model (in bold, as `vllm-sr/d3-ultra`) and the
+measured latency.
 
 Set `systemOneUi` to `compact` for one line per decision, or to `off` to hide them.
 
@@ -85,18 +88,20 @@ attributes that say what it shows:
 
 | Attribute | Values |
 | --- | --- |
-| `data-system-one` | `card`, `compact` (one line) or `tool` (the `system_one` row) |
-| `data-system-one-reflex` | `triage`, `guard`, `shield`, `done` or `tool` |
-| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; done-check `stop` or `continue`; tool `running` or `done`; `error` when System One did not answer |
+| `data-system-one` | `card`, `compact` (one line), `tool` (the `system_one` row) or `notice` (the free-key line) |
+| `data-system-one-reflex` | `triage`, `guard`, `shield`, `done`, `tool` or `key` |
+| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; done-check `stop` or `continue`; tool `running` or `done`; key `created` or `failed`; `error` when System One did not answer |
 | `data-system-one-outcome` | guard, once you answer its approval: `allowed`, `rejected`, `cancelled` or `failed` |
 | `data-system-one-why` | done-check: `complete`, `waiting`, `unfinished` or `unchecked` |
 | `data-system-one-tone` | its colour: `ok` (green), `info` (ember), `warn` (amber), `bad` (red) or `muted` |
 | `data-system-one-count` | how many decisions it holds (a batch: how many items) |
 | `data-system-one-turn`, `data-system-one-step` | where it acted (the step for guard and shield) |
+| `data-system-one-model` | the model that answered, as `vllm-sr/d3-ultra` |
 
 Inside a root, `data-system-one-part` marks `badge` (the ember **System One** pill), `latency`, `reflex`, `summary`,
 `model`, `head`, `toggle` (the button of a one-line element), `rows`, `verdict`, `outcome`, `subject`, `facts`,
-`note` and `more`, and in the batch row also `stack`, `legend`, `failed`, `results` and `raw`. Each number is a
+`note` and `more`, in the batch row also `stack`, `legend`, `failed`, `results` and `raw`, and in the free-key line
+`badge` (the **System Duo** pill), `summary` and `links`. Each number is a
 `data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (triage), `risk`, `leaks` and `on-task` (guard),
 `passages` and `injection` (shield), `complete`, `checked` and `waiting` (done-check). Decision rows carry
 `data-system-one-decision` and `data-system-one-call`, batch questions `data-system-one-question`. For example:
@@ -113,6 +118,8 @@ Inside a root, `data-system-one-part` marks `badge` (the ember **System One** pi
 | The ember badge, and its latency | `[data-system-one-part="badge"]`, `[data-system-one-part="latency"]` |
 | "Dangerous", and "You rejected it" | `[data-system-one-fact="risk"]`, `[data-system-one-part="outcome"]` |
 | The reason | `[data-system-one-part="note"]` |
+| The model's name (bold) | `[data-system-one-part="model"]` |
+| Free key created | `[data-system-one="notice"][data-system-one-verdict="created"]` |
 
 ## Your data
 

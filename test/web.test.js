@@ -119,6 +119,7 @@ test('the styles join the page once, owned by the package', () => {
   assert.equal(tags[0].dataset.plugin, '@vllm-sr/dsh')
   assert.match(tags[0].textContent, /\.vsr-s1--card/)
   assert.match(tags[0].textContent, /prefers-reduced-motion/)
+  assert.match(tags[0].textContent, /\.vsr-s1__model\{[^}]*font-weight:700/)
 })
 
 test('records group into one card per triage, per guard or shield step, and per done-check', () => {
@@ -213,6 +214,44 @@ test('every element carries the selectors README.md documents', () => {
   for (const [, value] of selectors.matchAll(/data-system-one-(?:part|fact)="([a-z-]+)"/g)) assert.ok(drawn.has(value), `${value} is drawn by web/client.js`)
 })
 
+test('the free-key line says what happened, under the request, in either mode', () => {
+  const { exports } = load()
+  const [made, refused] = assemble(exports.definition, [
+    record({ reflex: 'key', verdict: 'created', site: 'app.vllm-sr.ai', saved: '~/.dsh/.env', store: true, terms: 'https://app.vllm-sr.ai/terms', privacy: 'https://app.vllm-sr.ai/privacy', model: undefined, ms: undefined }),
+    record({ ui: 'compact', reflex: 'key', verdict: 'failed', site: 'app.vllm-sr.ai', url: 'https://app.vllm-sr.ai', ref: 'VLLM_SR_API_KEY', error: { code: 'key_creation_limited', message: 'too many keys created from this network address; try again later' }, model: undefined, ms: undefined }),
+  ])
+  assert.equal(made.groupTree, 'turn', 'it stays visible when the turn folds')
+  const line = render(exports.SystemOneNode({ node: made }))
+  assert.deepEqual(attrs(findAll(line, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'tone', 'turn']), { '': 'notice', reflex: 'key', verdict: 'created', tone: 'ok', turn: '1' })
+  assert.equal(textOf(line), 'System DuoFree API key created for app.vllm-sr.ai, saved in ~/.dsh/.envTermsPrivacy')
+  assert.deepEqual(parts(line), ['badge', 'summary', 'links'])
+  assert.deepEqual(findAll(line, props => props.href).map(link => link.props.href), ['https://app.vllm-sr.ai/terms', 'https://app.vllm-sr.ai/privacy'])
+
+  const no = render(exports.SystemOneNode({ node: refused }))
+  assert.deepEqual(attrs(findAll(no, props => props['data-system-one'])[0], ['', 'verdict', 'tone']), { '': 'notice', verdict: 'failed', tone: 'bad' })
+  assert.ok(textOf(no).includes('No free API key from app.vllm-sr.ai: too many keys created from this network address; try again later. Get one at app.vllm-sr.ai and save it as VLLM_SR_API_KEY.'), textOf(no))
+  assert.equal(findAll(no, props => props.href).length, 0)
+})
+
+test('every view names its model in full and in bold', () => {
+  const { exports } = load()
+  const nameIn = tree => findAll(tree, props => props['data-system-one-part'] === 'model')
+  const [asked] = assemble(exports.definition, [record({ reflex: 'guard', step: 7, callId: 'c9', tool: 'bash', call: 'rm -rf build', answers: guardAnswers(2.1), verdict: 'ask', why: 'its risk is Dangerous', model: 'd3-ultra' })])
+  const card = render(exports.SystemOneNode({ node: asked }))
+  assert.deepEqual(nameIn(card).map(name => [name.type, textOf(name)]), [['b', 'vllm-sr/d3-ultra']])
+  assert.equal(findAll(card, props => props['data-system-one'])[0].props['data-system-one-model'], 'vllm-sr/d3-ultra')
+
+  // a one-line element shows it once opened, as a card's head does
+  const [routine] = assemble(exports.definition, [record({ reflex: 'guard', step: 8, callId: 'c10', tool: 'bash', call: 'ls', answers: guardAnswers(0.2), verdict: 'allow', model: 'vllm-sr/vela3-turbo' })])
+  assert.equal(nameIn(render(exports.SystemOneNode({ node: routine }))).length, 0)
+  const opened = { ...fakeReact, useState: init => [init === false ? true : typeof init === 'function' ? init() : init, () => {}] }
+  const { exports: open } = load({ require: specifier => (specifier === 'react' ? opened : assert.fail(specifier)) })
+  const [again] = assemble(open.definition, [record({ reflex: 'guard', step: 8, callId: 'c10', tool: 'bash', call: 'ls', answers: guardAnswers(0.2), verdict: 'allow', model: 'vllm-sr/vela3-turbo' })])
+  const line = render(open.SystemOneNode({ node: again }))
+  assert.deepEqual(nameIn(line).map(name => [name.type, textOf(name)]), [['b', 'vllm-sr/vela3-turbo']])
+  assert.equal(findAll(line, props => props['data-system-one'])[0].props['data-system-one-model'], 'vllm-sr/vela3-turbo')
+})
+
 test('triage, shield and done-check cards say what System One decided', () => {
   const { exports } = load()
   const nodes = assemble(exports.definition, [
@@ -275,6 +314,8 @@ test('the system_one row draws the batch from its result, and its progress while
   assert.deepEqual(attrs(root(tree), ['', 'reflex', 'verdict', 'tone', 'count', 'call']), { '': 'tool', reflex: 'tool', verdict: 'done', tone: 'ok', count: '230', call: 'call-7' })
   assert.deepEqual(findAll(tree, props => props['data-system-one-question']).map(question => question.props['data-system-one-question']), ['team', 'urgency', 'churn_risk'])
   for (const part of ['head', 'badge', 'latency', 'model', 'stack', 'legend', 'failed', 'results']) assert.ok(parts(tree).includes(part), `part ${part}`)
+  assert.equal(textOf(findAll(tree, props => props['data-system-one-part'] === 'model')[0]), 'vllm-sr/d3-ultra')
+  assert.equal(root(tree).props['data-system-one-model'], 'vllm-sr/d3-ultra')
   assert.match(findAll(tree, props => props['data-system-one-part'] === 'failed')[0].props.className, /vsr-s1__key--bad/)
 
   const running = render(exports.SystemOneToolRow({ ...props, phase: 'start', block: { argsRaw: '{"file":"support/tickets.jsonl","questions":{"team":{},"urgency":{},"churn_risk":{}}}' } }))

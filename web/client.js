@@ -64,7 +64,8 @@ window.__ModuleLoader__.load({
       const num = value => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
       const p2 = value => (num(value) === undefined ? '?' : value.toFixed(2))
       const secs = ms => (num(ms) === undefined ? '' : `${(ms / 1000).toFixed(2)} s`)
-      const shortModel = model => (typeof model === 'string' ? model.replace(/^vllm-sr\//, '') : '')
+      // System One's models are vllm-sr's; the name always shows its owner, whatever form the answer gave it in
+      const fullModel = model => (typeof model === 'string' && model ? (model.includes('/') ? model : `vllm-sr/${model}`) : '')
       const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
       const clamp01 = value => Math.min(1, Math.max(0, value))
       const level = (labels, score) => labels[Math.min(labels.length - 1, Math.max(0, Math.round(score)))]
@@ -319,6 +320,11 @@ window.__ModuleLoader__.load({
           secs(ms) ? h('span', { className: 'vsr-s1__ms', 'data-system-one-part': 'latency' }, secs(ms)) : null)
       }
 
+      function Model({ model }) {
+        const name = fullModel(model)
+        return name ? h('b', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: name }, name) : null
+      }
+
       function Pill({ tone, children, arrow, part }) {
         return h('span', { className: cx('vsr-s1__pill', `vsr-s1__pill--${tone}`, arrow && 'vsr-s1__pill--then'), 'data-system-one-part': part }, children)
       }
@@ -372,6 +378,7 @@ window.__ModuleLoader__.load({
           'data-system-one-count': String(state.rows.length),
           'data-system-one-turn': whole(state.rows[0].turn),
           'data-system-one-step': state.reflex === 'guard' || state.reflex === 'shield' ? whole(state.rows[0].step) : undefined,
+          'data-system-one-model': fullModel(state.rows[state.rows.length - 1].model) || undefined,
         }
       }
 
@@ -393,7 +400,7 @@ window.__ModuleLoader__.load({
           h(Badge, { key: idOf(last), id: idOf(last), ms: last.ms, time: last.time }),
           h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, reflex),
           h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
-          last.model ? h('span', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: last.model }, shortModel(last.model)) : null),
+          h(Model, { model: last.model })),
         h(Rows, { reflex: state.reflex, rows: state.rows, views }))
       }
 
@@ -423,8 +430,40 @@ window.__ModuleLoader__.load({
           h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: said },
             h('span', { className: cx('vsr-s1__verdict', line.tone && `vsr-s1__verdict--${line.tone}`), 'data-system-one-part': 'verdict' }, line.label),
             line.rest ? ` · ${line.rest}` : null),
+          open ? h(Model, { model: last.model }) : null,
           h(Chevron)),
         open ? h(Rows, { reflex: state.reflex, rows: state.rows, views }) : null)
+      }
+
+      function KeyGlyph() {
+        return h('svg', { className: 'vsr-s1__glyph', viewBox: '0 0 16 16', width: 12, height: 12, 'aria-hidden': true },
+          h('circle', { cx: 5.5, cy: 8, r: 3, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 }),
+          h('path', { d: 'M8.5 8H14M12 8v2.5M14 8v2', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' }))
+      }
+
+      // The free key a start fetched, or why it could not: one line under the request, in either mode.
+      function KeyNotice({ state }) {
+        const row = state.rows[state.rows.length - 1]
+        const created = row.verdict === 'created'
+        const fresh = useFresh(`key:${idOf(row)}`, row.time)
+        const site = text(row.site) || 'app.vllm-sr.ai'
+        const said = created
+          ? `Free API key created for ${site}, saved in ${text(row.saved) || '~/.dsh/.env'}`
+          : `No free API key from ${site}: ${text(row.error?.message) || 'the site refused'}. Get one at ${site} and save it as ${text(row.ref) || 'VLLM_SR_API_KEY'}.`
+        const link = (href, label) => (typeof href === 'string' && /^https:\/\//.test(href) ? h('a', { className: 'vsr-s1__link', href, target: '_blank', rel: 'noreferrer' }, label) : null)
+        return h('div', {
+          className: cx('vsr-s1', 'vsr-s1--notice', created ? 'vsr-s1--ok' : 'vsr-s1--bad', fresh && 'vsr-s1--fresh'),
+          role: 'note',
+          'aria-label': `System Duo: ${said}`,
+          'data-system-one': 'notice',
+          'data-system-one-reflex': 'key',
+          'data-system-one-verdict': created ? 'created' : 'failed',
+          'data-system-one-tone': created ? 'ok' : 'bad',
+          'data-system-one-turn': whole(row.turn),
+        },
+        h('span', { className: cx('vsr-s1__duo', fresh && 'vsr-s1__badge--fresh'), 'data-system-one-part': 'badge' }, h(KeyGlyph), 'System Duo'),
+        h('span', { className: cx('vsr-s1__summary', !created && 'vsr-s1__summary--bad'), 'data-system-one-part': 'summary', title: said }, said),
+        created && (row.terms || row.privacy) ? h('span', { className: 'vsr-s1__links', 'data-system-one-part': 'links' }, link(row.terms, 'Terms'), link(row.privacy, 'Privacy')) : null)
       }
 
       // A routine check (an allowed call, a clean result) is one line in either mode; a decision that changed
@@ -432,6 +471,7 @@ window.__ModuleLoader__.load({
       function SystemOneNode(props) {
         const state = props?.node?.data
         if (!state || !Array.isArray(state.rows) || state.rows.length === 0) return null
+        if (state.reflex === 'key') return h(Contained, null, h(KeyNotice, { state }))
         const slim = state.ui === 'compact' || !standsOut(state)
         return h(Contained, null, h(slim ? Compact : Card, { state }))
       }
@@ -561,13 +601,17 @@ window.__ModuleLoader__.load({
 
         const ms = num(meta.seconds) === undefined ? undefined : meta.seconds * 1000
         const headline = [plural(num(meta.items) ?? 0, 'item'), plural(num(meta.questions) ?? 0, 'question'), plural(num(meta.requests) ?? 0, 'request')].join(' · ')
-        const done = { ...common, 'data-system-one-verdict': 'done', 'data-system-one-tone': 'ok', 'data-system-one-count': String(meta.items ?? '') }
+        const done = {
+          ...common, 'data-system-one-verdict': 'done', 'data-system-one-tone': 'ok', 'data-system-one-count': String(meta.items ?? ''),
+          'data-system-one-model': fullModel(meta.model) || undefined,
+        }
         if (ui === 'compact') {
           return h('div', { className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--ok', open && 'vsr-s1--open', fresh && 'vsr-s1--fresh'), 'data-system-one': 'tool', ...done },
             h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
               h(Badge, { id: `${callId}:done`, ms, time: block?.time }),
               h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
               h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+              open ? h(Model, { model: meta.model }) : null,
               h(Chevron)),
             open ? h(ToolBody, { meta, fresh, cwd, openFile }) : null)
         }
@@ -583,7 +627,7 @@ window.__ModuleLoader__.load({
           h(Badge, { id: `${callId}:done`, ms, time: block?.time }),
           h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
           h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
-          meta.model ? h('span', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: meta.model }, shortModel(meta.model)) : null),
+          h(Model, { model: meta.model })),
         h(ToolBody, { meta, fresh, cwd, openFile }))
       }
 
@@ -612,7 +656,13 @@ window.__ModuleLoader__.load({
 .vsr-s1__summary--bad{color:var(--vsr-s1-bad)}
 .vsr-s1__verdict{font-weight:600;color:var(--vsr-s1-text)}
 .vsr-s1__verdict--ok{color:var(--vsr-s1-ok)}.vsr-s1__verdict--warn{color:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__verdict--bad{color:var(--vsr-s1-bad)}.vsr-s1__verdict--info{color:var(--vsr-s1-ember-deep)}.vsr-s1__verdict--muted{color:var(--vsr-s1-text-3)}
-.vsr-s1__model{flex:none;color:var(--vsr-s1-text-3);font-size:12px;white-space:nowrap}
+.vsr-s1__model{flex:none;color:var(--vsr-s1-text-2);font-size:12px;font-weight:700;letter-spacing:-.005em;white-space:nowrap}
+.vsr-s1--notice{display:flex;align-items:center;gap:9px;min-width:0;margin:4px 0;padding:3px 0}
+.vsr-s1--notice .vsr-s1__summary{white-space:normal}
+.vsr-s1__duo{position:relative;display:inline-flex;flex:none;align-items:center;gap:5px;height:22px;padding:0 9px 0 8px;border-radius:999px;color:#fff;font-size:12px;font-weight:650;white-space:nowrap;background:linear-gradient(110deg,var(--vsr-s1-ember) 0%,#B04FD0 58%,#2F7BF6 100%);box-shadow:0 1px 2px rgba(90,60,170,.25),inset 0 1px 0 rgba(255,255,255,.32)}
+.vsr-s1__glyph{flex:none}
+.vsr-s1__links{display:inline-flex;flex:none;gap:10px}
+a.vsr-s1__link{text-decoration:none}
 .vsr-s1__rows{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:12px;row-gap:8px;margin-top:9px}
 .vsr-s1__rows>*{grid-column:1/-1}
 .vsr-s1__row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-columns:subgrid;column-gap:12px;align-items:start}
