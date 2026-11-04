@@ -20,13 +20,16 @@ and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ```bash
 npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add @vllm-sr/dsh
+dsh plugin --profile web add @vllm-sr/dsh@0.6.0
 dsh web
 ```
 
 The first line installs DeepSeek Harness (0.2.1-rc.5 or a later 0.2 release, on Node 24.9 or later) and pnpm, which
-`dsh plugin` uses to install plugins; without pnpm, `dsh plugin add` stops with "pnpm was not found". On a machine
-with git, the package can also come straight from GitHub: `dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
+`dsh plugin` uses to install plugins; without pnpm, `dsh plugin add` stops with "pnpm was not found". Name the
+version: pnpm installs no release younger than a day (its `minimumReleaseAge` supply-chain policy), so a plain
+`@vllm-sr/dsh` or `@latest` gets the newest release that is at least a day old; a version you name is installed as
+asked. On a machine with git, the package can also come straight from GitHub:
+`dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
 
 On its first start the plugin gets a free System Duo key, with the same small proof of work the site's "Get your API
 key" button runs in the browser, and saves it in DeepSeek Harness's credential store and in `~/.dsh/.env` (readable
@@ -37,7 +40,7 @@ in the app and System One keeps working beside it.
 Headless:
 
 ```bash
-dsh plugin --profile headless add @vllm-sr/dsh
+dsh plugin --profile headless add @vllm-sr/dsh@0.6.0
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
