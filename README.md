@@ -20,7 +20,7 @@ and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ```bash
 npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add @vllm-sr/dsh@0.6.3
+dsh plugin --profile web add @vllm-sr/dsh@0.6.4
 dsh web
 ```
 
@@ -40,7 +40,7 @@ in the app and System One keeps working beside it.
 Headless:
 
 ```bash
-dsh plugin --profile headless add @vllm-sr/dsh@0.6.3
+dsh plugin --profile headless add @vllm-sr/dsh@0.6.4
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
@@ -109,7 +109,7 @@ lines of a text file, a list of strings, or images. It writes the rubric; each q
 | --- | --- |
 | `{"type": "choice", "criteria": {...}}` | the option that fits, with its confidence |
 | `{"type": "noul", "instructions": "..."}` | the probability of yes |
-| `{"type": "score", "criteria": [...]}` | the expected level of an ordered scale |
+| `{"type": "score", "criteria": [...]}` | the expected level of an ordered scale, from 0, or on the levels' own numbers (`"1 = vague"`, `"2 = clear"`) |
 | `{"type": "box", "instructions": "..."}` | where an image shows it, as a box in fractions of the image (images only) |
 | `{"type": "span", "criteria": {"ERROR": "...", "COMPETITOR": "..."}}` | the words that carry each of your labels, with offsets and a probability each |
 | `{"preset": "pii"}` | personal data: the nine sensitive labels, or the ones `labels` picks (`"all"` for every label it knows) |

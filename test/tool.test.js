@@ -76,6 +76,7 @@ function decide(questions, state, images) {
     else if (id === 'r_refusal') answers[id] = picked(question, /can't help/.test(state.answer) ? 'refusal' : 'compliance')
     else if (question.type === 'choice') answers[id] = picked(question, /invoice|refund/i.test(text) ? 'billing' : 'support')
     else if (question.type === 'noul') answers[id] = { type: 'noul', noul: /!|fails|broken/i.test(text) ? 0.9 : 0.1 }
+    else if (question.type === 'score') answers[id] = { type: 'score', score: /!/.test(text) ? 1.8 : 0.4, confidence: 0.9, probabilities: {} }
     else if (question.type === 'box') {
       // a big image shows the target; a tiny one does not
       answers[id] = { type: 'box', box: { left: 0.25, top: 0.25, right: 0.5, bottom: 0.5 }, confidence: images?.[0]?.length > 400 ? 0.92 : 0.1 }
@@ -314,10 +315,29 @@ test('router signals go to the span model under their trained names, beside the 
   const rows = await readRows(judged.output)
   assert.deepEqual(rows.map(row => [row.answers.harm.choice, row.answers.refused.choice]), [['unsafe response', 'compliance'], ['safe response', 'refusal']])
 
-  await assert.rejects(run({ questions: { harm: { signal: 'r_harm' } }, file: 'replies.jsonl' }), /signal r_harm reads user and answer/)
+  // records with fields user and answer need no state_fields; other items still do
+  asked.length = 0
+  const own = await run({ questions: { harm: { signal: 'r_harm' } }, file: 'replies.jsonl' })
+  assert.deepEqual(asked[0].state, { user: replies[0].user, answer: replies[0].answer })
+  assert.deepEqual((await readRows(own.output)).map(row => row.answers.harm.choice), ['unsafe response', 'safe response'])
+  await assert.rejects(run({ questions: { harm: { signal: 'r_harm' } }, items: ['Is this safe?'] }), /signal r_harm reads user and answer/)
   await assert.rejects(run({ questions: { jailbreak: { signal: 'attack' } }, file: 'replies.jsonl', state_fields: { user: 'user', answer: 'answer' } }), /signal attack reads one text/)
   await assert.rejects(run({ questions: { odd: { signal: 'nope' } }, items: ['x'] }), /signal must be one of attack, p_harm/)
   await assert.rejects(run({ questions: { a: { signal: 'attack' }, b: { signal: 'attack' } }, items: ['x'] }), /signal attack is asked twice/)
+})
+
+test('a score question answers on the levels\' own numbers when they carry them, else from 0', async t => {
+  const { run, rendered } = await setup(t)
+  const numbered = await run({ questions: { clarity: { type: 'score', instructions: 'How clear is it?', criteria: ['1 = vague', '2 = clear', '3 = concrete'] } }, items: ['Ship it!', 'maybe later'] })
+  assert.deepEqual((await readRows(numbered.output)).map(row => row.answers.clarity.score), [2.8, 1.4])
+  assert.deepEqual([numbered.summary.clarity.mean, numbered.summary.clarity.levels], [2.1, { '1 = vague': 1, '2 = clear': 0, '3 = concrete': 1 }])
+  assert.match(rendered(numbered), /- clarity: mean 2\.1; 1 = vague 1, 2 = clear 0, 3 = concrete 1; highest: 1 \(2\.8\), 2 \(1\.4\)/)
+
+  const plain = await run({ questions: { urgency: { type: 'score', instructions: 'How urgent is it?', criteria: ['Low', 'Normal', 'Urgent'] } }, items: ['Ship it!', 'maybe later'] })
+  assert.deepEqual((await readRows(plain.output)).map(row => row.answers.urgency.score), [1.8, 0.4])
+  // numbers that do not count the levels are part of their text
+  const sizes = await run({ questions: { size: { type: 'score', instructions: 'How big is it?', criteria: ['1.5 GB or less', '2 GB', '3 GB'] } }, items: ['Ship it!'] })
+  assert.equal((await readRows(sizes.output))[0].answers.size.score, 1.8)
 })
 
 test('box questions over images: annotated PNG copies with the boxes found, and thumbnails with their boxes for Chat', async t => {

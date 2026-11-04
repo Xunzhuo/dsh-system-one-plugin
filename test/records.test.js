@@ -539,7 +539,7 @@ test('with a span model listed, the reflexes use spans: removed words, masked da
 
   // the done-check: one request answers its questions, the unsupported claims, what backs the answer and the refusal
   // signal, and only the claim nothing read supports goes back
-  handlers.get('tools/result')({ name: 'read', callId: 'r1', arguments: { file_path: 'pyproject.toml' }, agent }, { isError: false, content: [{ type: 'text', text: 'requires-python = ">=3.11"' }] })
+  handlers.get('tools/result')({ name: 'read', callId: 'r1', arguments: { file_path: `${process.cwd()}/pyproject.toml` }, agent }, { isError: false, content: [{ type: 'text', text: 'requires-python = ">=3.11"' }] })
   // System One's own summary of a batch backs nothing, even where the span model marks it
   handlers.get('tools/result')({ name: 'system_one', callId: 's1', arguments: { file: 'deps.jsonl' }, agent }, { isError: false, content: [{ type: 'text', text: 'System One answered: requires-python = ">=3.10"' }] })
   handlers.get('session/event')(agent.session, { type: 'assistant/message', data: { turn: 1, step: 3, message: { content: [{ type: 'text', text: 'It needs Python 3.11 and it is MIT licensed.' }] } } })
@@ -550,7 +550,7 @@ test('with a span model listed, the reflexes use spans: removed words, masked da
   assert.deepEqual([done.reflex, done.model, done.verdict, done.why, done.unsupported, done.spanModel], ['done', 'vllm-sr/vela3-turbo', 'continue', 'unsupported', 1, 'vllm-sr/vela3-turbo'])
   assert.equal(done.excerpts[0].find(part => part.mark).mark.text, 'MIT licensed')
   assert.match(agent.steered.content[0].text, /Nothing you read this turn supports these parts of your answer: "MIT licensed"\./)
-  // and the passage that backs the rest, with the read it came from
+  // and the passage that backs the rest, with the read it came from, relative to the working directory
   assert.deepEqual([done.backed, done.evidence], [1, [{ tool: 'read', source: 'pyproject.toml', text: 'requires-python = ">=3.11"', p: 0.96 }]])
   const halu = asked.find(questions => questions.halu)
   assert.deepEqual([halu.halu, halu.evidence], [{ preset: 'halu' }, { type: 'span', criteria: ['evidence'], over: 'context' }])

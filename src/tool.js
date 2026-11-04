@@ -5,7 +5,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { REQUEST_TOKENS, compactAnswer, requestSlices, stateCost } from './client.js'
 import { formatOf, loadItems } from './items.js'
 import { annotatePng, imageSize } from './png.js'
-import { SENSITIVE_LABELS } from './questions.js'
+import { ROUTER_SIGNALS, SENSITIVE_LABELS } from './questions.js'
 import { csvCell, redactItem, writeRedacted } from './redact.js'
 import { parseQuestions, planQuestions } from './rubric.js'
 import { excerpts, labelCounts, maskAround, onPlaceholder, placeSpans, trimSpan } from './spans.js'
@@ -30,11 +30,11 @@ You write the rubric as questions; System One answers every question for every i
 Question types:
 - "choice": pick one option. criteria: an object of option name -> short description (2 or more options).
 - "noul": yes or no, with no criteria: say in the instructions what counts as yes. The answer is the probability of yes.
-- "score": an ordered scale. criteria: a list of level descriptions, lowest first (2 to 10). The answer is the expected level (0 = first).
+- "score": an ordered scale. criteria: a list of level descriptions, lowest first (2 to 10). The answer is the expected level: 0 for the first, or the levels' own numbers when each starts with one, as ["1 = vague", "2 = clear", "3 = concrete"].
 - "box": where something is in an image (images only), as {"type": "box", "instructions": "the spike in the plotted line"}: instructions name the target. The answer is a box in fractions of the image, with a confidence (below 0.4: not found).
 - "span": which words of each text carry a label: use it whenever you want the words themselves (error codes, product names, requests, quotes), not one category per item. One span question names all its labels in criteria, an object of LABEL -> what it marks (or a list of labels), and marks every label's words in every item. The answer lists the marked words, each with a probability. Describe each label precisely, and say in context what the items are and whose they are (e.g. "Support tickets sent to Lumen Cloud"), so a label such as COMPETITOR knows which product is yours. threshold (0 to 1) drops marks less probable than it.
 - Presets, as {"preset": "pii"}: "pii" marks personal data (${SENSITIVE_LABELS.join(', ')}; "labels" picks others it knows, such as ORGANIZATION, DATE_TIME and GPE, or "all"); "halu" marks the words of each item that its sources do not support; "evidence" marks the words of the sources that back each item. halu and evidence need sources.
-- Router signals, as {"signal": "attack"}: the vLLM Semantic Router's trained questions: attack (jailbreak or benign), p_harm (unsafe or safe request), domain (subject area), factcheck, feedback, modality, scenario; r_harm and r_refusal read a user request and an answer (state_fields {"user": ..., "answer": ...}).
+- Router signals, as {"signal": "attack"}: the vLLM Semantic Router's trained questions: attack (jailbreak or benign), p_harm (unsafe or safe request), domain (subject area), factcheck, feedback, modality, scenario; r_harm and r_refusal read a user request and an answer (state_fields {"user": ..., "answer": ...}; records with fields "user" and "answer" need none).
 Span questions, presets and signals are answered by span_model; choice, noul, score and box questions by model.
 
 Example questions: {"team": {"type": "choice", "instructions": "Which team should handle this ticket?", "criteria": {"billing": "Payments, invoices, refunds", "engineering": "Bugs, errors, outages", "sales": "Plans and pricing"}}, "urgency": {"type": "score", "instructions": "How urgent is this ticket?", "criteria": ["Low", "Normal", "Urgent"]}, "angry": {"type": "noul", "instructions": "Is the customer angry?"}, "mentions": {"type": "span", "criteria": {"ERROR": "an error code or message the customer saw", "COMPETITOR": "another product the customer compares us with"}}, "personal": {"preset": "pii"}, "jailbreak": {"signal": "attack"}}
@@ -47,6 +47,17 @@ function defaultOutput(cwd, file, images) {
   const folders = [...new Set((images ?? []).map(path => dirname(path)))]
   const within = folders.length === 1 ? relative(cwd, folders[0]) : ''
   return within && !within.startsWith('..') && !isAbsolute(within) ? `${folders[0]}.s1.jsonl` : 'system-one-results.jsonl'
+}
+
+/**
+ * The number of a score question's first level when its levels carry their own numbers, as ["1 = vague", "2 = clear",
+ * "3 = concrete"]: its answers are then given on that numbering. 0 otherwise: the model's answer counts levels from 0.
+ */
+function levelBase(criteria) {
+  const numbers = (Array.isArray(criteria) ? criteria : []).map(level => String(level).match(/^\s*(\d+)(?!\d|[.,]\d)/)?.[1])
+  if (numbers.length < 2 || numbers.some(number => number === undefined)) return 0
+  const first = Number(numbers[0])
+  return numbers.every((number, index) => Number(number) === first + index) ? first : 0
 }
 
 function summarize(questions, rows, asked) {
@@ -91,10 +102,11 @@ function summarize(questions, rows, asked) {
       summary[id] = { type: 'noul', yes: yesCount, no: answers.length - yesCount, top: sorted.slice(0, 8).map(({ id: itemId, a }) => [itemId, a.yes]), failed, ...(error ? { error } : {}) }
     } else if (question.type === 'score') {
       const levels = question.criteria.map(() => 0)
+      const base = levelBase(question.criteria)
       let total = 0
       for (const { a } of answers) {
         total += a.score
-        levels[Math.min(levels.length - 1, Math.max(0, Math.round(a.score)))]++
+        levels[Math.min(levels.length - 1, Math.max(0, Math.round(a.score - base)))]++
       }
       const sorted = [...answers].sort((x, y) => y.a.score - x.a.score)
       summary[id] = {
@@ -288,9 +300,12 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         cwd,
       })
       const hasImages = items.some(item => item.images)
-      const fields = fieldsOf(args.state_fields)
       const sourcePaths = (Array.isArray(args.sources) ? args.sources : typeof args.sources === 'string' ? [args.sources] : []).filter(Boolean)
       const grounded = sourcePaths.length > 0
+      // a signal that judges a reply reads the records' own "user" and "answer" fields when state_fields names none
+      const needs = [...new Set(Object.values(questions).flatMap(question => ROUTER_SIGNALS[question.signal]?.parts ?? []))]
+      const own = needs.length > 0 && !grounded && items.every(item => typeof item.record === 'object' && item.record !== null && needs.every(part => item.record[part] !== undefined))
+      const fields = fieldsOf(args.state_fields) ?? (own ? Object.fromEntries(needs.map(part => [part, part])) : undefined)
       if ((fields || grounded) && hasImages) throw new Error('sources and state_fields read text items, not images')
       const parts = fields || grounded ? [...new Set([...Object.keys(fields ?? {}), ...(grounded ? ['context', 'answer'] : [])])] : undefined
       const model = args.model || config.model
@@ -353,7 +368,9 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
             const entry = asked[id]
             const answer = answers?.[wire]
             if (entry.kind !== 'span') {
-              rows[index].answers[id] = compactAnswer(answer)
+              const compact = compactAnswer(answer)
+              const base = questions[id].type === 'score' ? levelBase(questions[id].criteria) : 0
+              rows[index].answers[id] = base && typeof compact.score === 'number' ? { ...compact, score: round3(compact.score + base) } : compact
               continue
             }
             if (answer?.error || (!answer && !Array.isArray(response.spans[offset]?.[wire]))) {

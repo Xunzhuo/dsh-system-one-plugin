@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.4 (2026-11-05)
+
+- **A score on numbered levels uses their numbers.** System Two often writes a scale as `["1 = vague", "2 = clear",
+  "3 = concrete"]`; the `system_one` tool answered it from 0, so a card said "3 = concrete 12 · mean 1.88" and the
+  results file held 0-based scores. Levels that each start with their number, counting up by one, are now answered on
+  that numbering (mean 2.88); other scales still count from 0.
+- **`r_harm` and `r_refusal` read records' own `user` and `answer` fields** when the call names no `state_fields`,
+  instead of refusing the call.
+- **The done-check's "Backed by" passages name paths as the other cards do**, relative to the working directory and
+  with the home directory as `~`, not `/home/<you>/…`.
+
 ## 0.6.3 (2026-11-05)
 
 - **Redaction keeps each item's id.** The pii preset took ids such as `C-2103` for names, and the redacted copy said

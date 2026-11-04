@@ -829,6 +829,7 @@ export function apply(ctx, config) {
         : haluTask ? await haluTask : undefined
       const unsupported = halu?.spans ?? []
       const backed = halu?.backed ?? []
+      const workspace = backed.length ? await workspaceOf({ agent, signal }) : undefined
       const asking = waiting !== undefined && waiting >= 0.5
       // an answer that declined (the user rejected a step, or the request) is not pushed to carry on
       const declined = refusal !== undefined && refusal >= config.doneRefusalAt
@@ -846,7 +847,12 @@ export function apply(ctx, config) {
         ...(halu ? { spanModel: halu.model, spanMs: ms(halu.ms), unsupported: unsupported.length, excerpts: excerpts(answered, unsupported, { around: 50, max: 3 }) } : {}),
         ...(backed.length ? {
           backed: backed.length,
-          evidence: backed.slice(0, 3).map(({ span, part }) => ({ tool: part.tool, source: clip(part.source, 120), text: clip(span.text.replace(/\s+/g, ' ').trim(), 220), p: round3(span.probability) })),
+          evidence: backed.slice(0, 3).map(({ span, part }) => ({
+            tool: part.tool,
+            source: clip(relativeTo(part.source, workspace, homedir()), 120),
+            text: clip(relativeTo(span.text.replace(/\s+/g, ' ').trim(), workspace, homedir()), 220),
+            p: round3(span.probability),
+          })),
         } : {}),
       })
       if (!steer) return
