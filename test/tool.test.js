@@ -339,6 +339,9 @@ test('router signals go to the span model under their trained names, beside the 
   assert.equal(value.model, 'vllm-sr/d3-ultra')
   assert.equal(value.spanModel, 'vllm-sr/vela3-turbo')
   assert.equal(traced.at(-1).spanModel, 'vllm-sr/vela3-turbo')
+  // the results keep ids and answers only, so reading them brings no attack into System Two's context
+  const flagged = await readRows(value.output)
+  assert.deepEqual(flagged.map(row => [row.id, row.text, row.answers.jailbreak.choice]), [['1', undefined, 'benign'], ['2', undefined, 'jailbreak'], ['3', undefined, 'benign']])
   const summary = rendered(value)
   assert.match(summary, /^System One \(vllm-sr\/d3-ultra and vllm-sr\/vela3-turbo\) answered 4 question\(s\) for 3 item\(s\)/)
   assert.match(summary, /- jailbreak \(signal attack\): benign 2, jailbreak 1/)
@@ -349,6 +352,7 @@ test('router signals go to the span model under their trained names, beside the 
   assert.deepEqual(asked[0].state, { user: replies[0].user, answer: replies[0].answer })
   const rows = await readRows(judged.output)
   assert.deepEqual(rows.map(row => [row.answers.harm.choice, row.answers.refused.choice]), [['unsafe response', 'compliance'], ['safe response', 'refusal']])
+  assert.doesNotMatch(JSON.stringify(rows), /pick a lock|tension wrench/)
 
   // records with fields user and answer need no state_fields; other items still do
   asked.length = 0

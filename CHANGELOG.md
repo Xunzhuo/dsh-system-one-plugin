@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.9 (2026-11-05)
+
+- **A safety signal's results keep the flagged words out.** Asked to flag jailbreaks and harmful requests in the
+  demo's chatbot inbox without quoting them, System Two looked at the head of the `system_one` results file to learn
+  its fields; each row held the start of its message, a jailbreak among them, and `vllm-sr/auto`'s safety guard then
+  declined the turn. A call that asks `attack`, `p_harm`, `r_harm` or `r_refusal` now writes each row's id and answers
+  only.
+
 ## 0.6.8 (2026-11-05)
 
 - **A batch waits out a spent per-minute budget.** Marking the demo's 230 tickets with `vllm-sr/vela3-turbo`, a

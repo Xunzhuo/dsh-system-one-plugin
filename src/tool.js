@@ -25,6 +25,9 @@ const IMAGES_SHOWN = 12
 // a batch waits out a spent per-minute budget (the key's, or its network address's) as the gateway's Retry-After
 // says, rather than fail; the reflexes keep their short limits
 const BATCH_LIMITS = { retries: 6, waitMs: 60000 }
+// the signals that look for jailbreaks, harm and refusals: the items they read are often what System Two should not
+// read, so their results keep ids and answers only
+const SAFETY_SIGNALS = new Set(['attack', 'p_harm', 'r_harm', 'r_refusal'])
 
 const DESCRIPTION = `Ask System One, a fast decision model, typed questions about many items at once (text records, files' lines, or images) and get calibrated probabilities back in seconds, instead of reading the items yourself. Use it whenever the same judgment applies to many items: routing, labeling, filtering, triage, scoring, ranking, moderation, finding personal data, checking claims against sources, spotting problems in screenshots.
 
@@ -426,6 +429,8 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         const spans = personalOf(index)
         if (spans.length && item.source === undefined) rows[index].text = clip(redactItem(item, spans).text, 200)
       }
+      // and one that looks for jailbreaks or harm keeps their words out: System Two reading the results reads no attack
+      if (Object.values(questions).some(question => SAFETY_SIGNALS.has(question.signal))) for (const row of rows) delete row.text
 
       let redacted
       if (args.redact !== undefined && args.redact !== false && args.redact !== 'false' && args.redact !== null) {
