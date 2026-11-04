@@ -44,12 +44,13 @@ export function joined(spans) {
  * An item with `spans` (UTF-16 ranges of its text) replaced by `[LABEL]`: its text, and its record with each field's
  * part of the spans replaced (items.js `segments`). A field that is not a string is masked in its JSON, which stays
  * that field's value when it no longer parses. The item's id stays, so the copy's rows still match the results.
+ * `replaced` counts the places masked: each span, and each other place where its words recur.
  */
 export function redactItem(item, spans) {
   const id = item.segments?.find(segment => segment.field !== undefined && segment.field === item.idField)
   const cuts = joined(everywhere(item.text, spans).filter(span => !id || span.end <= id.start || span.start >= id.end))
   const text = replaceSpans(item.text, cuts, maskLabel)
-  if (typeof item.record !== 'object' || item.record === null) return { text, record: text }
+  if (typeof item.record !== 'object' || item.record === null) return { text, record: text, replaced: cuts.length }
   const record = { ...item.record }
   for (const segment of item.segments ?? []) {
     if (segment.field === undefined) continue
@@ -68,7 +69,7 @@ export function redactItem(item, spans) {
       record[segment.field] = masked
     }
   }
-  return { text, record }
+  return { text, record, replaced: cuts.length }
 }
 
 /**

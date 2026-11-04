@@ -6,7 +6,7 @@ import { REQUEST_TOKENS, compactAnswer, requestSlices, stateCost } from './clien
 import { formatOf, loadItems } from './items.js'
 import { annotatePng, imageSize } from './png.js'
 import { ROUTER_SIGNALS, SENSITIVE_LABELS } from './questions.js'
-import { csvCell, redactItem, writeRedacted } from './redact.js'
+import { csvCell, everywhere, joined, redactItem, writeRedacted } from './redact.js'
 import { parseQuestions, planQuestions } from './rubric.js'
 import { excerpts, labelCounts, maskAround, notPersonal, placeSpans, trimSpan } from './spans.js'
 import { clip } from './trace.js'
@@ -440,9 +440,11 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         let changed = 0
         const records = items.map((item, index) => {
           const spans = marking.flatMap(id => found[index][id] ?? [])
-          spanCount += spans.length
-          if (spans.length) changed++
-          return spans.length ? redactItem(item, spans).record : item.record
+          if (spans.length === 0) return item.record
+          const copy = redactItem(item, spans)
+          spanCount += copy.replaced
+          if (copy.replaced) changed++
+          return copy.record
         })
         await mkdir(dirname(out), { recursive: true })
         await writeRedacted({ file, format: file ? formatOf(file) : 'lines', output: out, items, records })
@@ -486,8 +488,10 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         if (picked.length === 0) continue
         examples[id] = picked.map(({ item, index, spans }) => {
           let read = asked[id].over && typeof states[index].state === 'object' ? states[index].state[asked[id].over] : item.text
-          let shown = spans
-          if (kind === 'labels' && personalIds.length) ({ text: read, spans: shown } = maskAround(read, spans, personalOf(index)))
+          // personal data wherever it recurs, as the redacted copy and the results file have it
+          let shown = kind === 'masked' ? joined(everywhere(read, spans)) : spans
+          const personal = kind === 'labels' && personalIds.length ? personalOf(index) : []
+          if (personal.length) ({ text: read, spans: shown } = maskAround(read, spans, read === item.text ? joined(everywhere(read, personal)) : personal))
           // evidence reads as a passage of its own file, or of the record's own context
           const block = kind === 'evidence' && spans[0].line !== undefined ? sources?.blocks.find(entry => entry.source === spans[0].source) : undefined
           if (block) {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.7 (2026-11-05)
+
+- **Privacy's card shows the text as System Two read it.** System Two read a marked name masked wherever its parts
+  recur (`Thanks [PERSON]` after `Priya Raman`), but the card's excerpts masked only the words the span model marked
+  and showed `Thanks Priya`. The card's excerpts, and the `system_one` tool's examples of personal data, now come from
+  the same masking as what System Two reads and the redacted copy.
+- **A redacted copy counts the places it masked.** `32 span(s) in 16 item(s) replaced` counted what the span model
+  marked, while the copy also masks each place where a marked name recurs; the count is now of the placeholders the
+  copy holds, so it matches a count of the copy.
+
 ## 0.6.6 (2026-11-05)
 
 - **A phone number has at least seven digits.** Privacy masked an image size in a command's output (`saved 960x540`)

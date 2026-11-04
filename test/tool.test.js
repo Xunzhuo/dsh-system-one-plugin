@@ -208,8 +208,12 @@ test('redaction keeps each item\'s id, the ids in its text and its punctuation, 
   const [row] = await readRows(value.output)
   assert.equal(row.id, 'C-2103')
   assert.deepEqual(row.answers.personal.labels, { PERSON: 1, EMAIL_ADDRESS: 1, STREET_ADDRESS: 1 })
-  assert.deepEqual(value.redacted, { output: join(workspace, 'calls.redacted.jsonl'), items: 1, spans: 3 })
+  // the copy's count is of the places it masked: "Priya" again is one more
+  assert.deepEqual(value.redacted, { output: join(workspace, 'calls.redacted.jsonl'), items: 1, spans: 4 })
   assert.deepEqual(await readRows(value.redacted.output), [{ id: 'C-2103', transcript: 'Hi, I am [PERSON] ([EMAIL_ADDRESS]), [STREET_ADDRESS], Bristol, again about C-2087.\nThanks [PERSON]; Priyanka in billing will call.' }])
+  // Chat's example shows the item as the copy has it
+  assert.match(plainOf(value.examples.personal[0].parts), /Thanks \[PERSON\]/)
+  assert.doesNotMatch(plainOf(value.examples.personal[0].parts), /\bPriya\b/)
 
   const again = await run({ questions: { personal: { preset: 'pii' } }, file: 'calls.redacted.jsonl' })
   assert.deepEqual(again.summary.personal.labels, {})

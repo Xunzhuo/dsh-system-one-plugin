@@ -626,6 +626,10 @@ test('privacy leaves the machine\'s own names, local addresses and the request\'
   const reread = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l3', arguments: { command: 'cat notes.redacted.txt' }, agent }, { isError: false, content: [{ type: 'text', text: copy }] }, async () => ({ kind: 'accept' }))
   assert.ok(reread.content[0].text.endsWith('from: [PERSON] <[EMAIL_ADDRESS]>\nsigned: [PERSON]. Thanks, [PERSON]! Adam replied.'), reread.content[0].text)
   assert.deepEqual([agent.session.records.at(-1).data.masked, agent.session.records.at(-1).data.labels], [1, { PERSON: 1 }])
+  // the card's excerpts show the text as System Two read it
+  const shown = agent.session.records.at(-1).data.excerpts.flat().map(part => part.text ?? `[${part.mark.label}]`).join('')
+  assert.match(shown, /Thanks, \[PERSON\]! Adam replied/)
+  assert.doesNotMatch(shown, /\bAda\b/)
 
   // an id the model takes for a name and a label's bare name stay as they are
   const ids = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l4', arguments: { command: 'head -2 inbox.jsonl' }, agent }, { isError: false, content: [{ type: 'text', text: "ids: ['m01', 'm02'] from Ada Lovelace; placeholders used: ['EMAIL_ADDRESS']" }] }, async () => ({ kind: 'accept' }))

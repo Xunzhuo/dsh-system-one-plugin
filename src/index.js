@@ -694,11 +694,13 @@ export function apply(ctx, config) {
         }
       }
       const hidden = privacy?.spans.length ? privacy.spans : []
+      // each detail wherever it recurs, as System Two reads it and as the card shows it
+      const cuts = hidden.length ? joined(everywhere(body, hidden)) : []
       if (privacy) {
         const labels = labelCounts(hidden)
         trace({ ev: 's1', reflex: 'privacy', session: state?.id, turn: state?.turn, tool: exec.name, call: briefCall(exec), model: privacy.model, ms: ms(privacy.ms), masked: hidden.length, labels })
         masking.answer(hidden.length
-          ? { model: privacy.model, ms: ms(privacy.ms), verdict: 'masked', masked: hidden.length, labels, excerpts: excerpts(body, hidden, { hide: true, around: 40, max: 3 }) }
+          ? { model: privacy.model, ms: ms(privacy.ms), verdict: 'masked', masked: hidden.length, labels, excerpts: excerpts(body, cuts, { hide: true, around: 40, max: 3 }) }
           : { model: privacy.model, ms: ms(privacy.ms), verdict: 'clean', masked: 0 })
       }
       if (!removed && hidden.length === 0) return downstream
@@ -719,7 +721,7 @@ export function apply(ctx, config) {
       }
       return {
         kind: 'accept',
-        content: [{ type: 'text', text: `${banners.join('\n')}\n\n${head}${hidden.length ? replaceSpans(body, joined(everywhere(body, hidden)), maskLabel) : body}${foot}` }],
+        content: [{ type: 'text', text: `${banners.join('\n')}\n\n${head}${hidden.length ? replaceSpans(body, cuts, maskLabel) : body}${foot}` }],
         additionalContexts: [...(downstream.additionalContexts ?? []), ...notices],
       }
     })
