@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
       const FRESH_MS = 20000
       const ROWS_SHOWN = 4
 
-      const REFLEX = { triage: 'Triage', guard: 'Guard', shield: 'Shield', done: 'Done-check', tool: 'Batch' }
+      const REFLEX = { triage: 'Triage', guard: 'Guard', shield: 'Shield', privacy: 'Privacy', done: 'Done-check', tool: 'Batch' }
       const KINDS = { code: 'Code', data: 'Data', research: 'Research', writing: 'Writing', ops: 'Ops', chat: 'Chat' }
       const EFFORT = ['Trivial', 'Small', 'Medium', 'Large']
       const RISK = ['Safe', 'Normal', 'Dangerous', 'Critical']
@@ -59,6 +59,7 @@ window.__ModuleLoader__.load({
         waiting: { label: 'Waiting on you', tone: 'info' },
         unfinished: { label: 'Sent back', tone: 'warn' },
         unchecked: { label: 'Sent back to verify', tone: 'warn' },
+        unsupported: { label: 'Sent back to re-verify', tone: 'warn' },
       }
 
       const num = value => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
@@ -83,12 +84,12 @@ window.__ModuleLoader__.load({
         return data && typeof data === 'object' && data.v === 1 && typeof data.reflex === 'string' ? data : undefined
       }
 
-      // one card per triage of a turn, per guard or shield step (parallel calls share it), per done-check
+      // one card per triage of a turn, per guard, shield or privacy step (parallel calls share it), per done-check
       function groupOf(data, seq) {
         const turn = Number.isSafeInteger(data.turn) ? data.turn : undefined
         const step = Number.isSafeInteger(data.step) ? data.step : undefined
         if (data.reflex === 'triage' && turn !== undefined) return `t${turn}:triage`
-        if ((data.reflex === 'guard' || data.reflex === 'shield') && turn !== undefined && step !== undefined) return `t${turn}:s${step}:${data.reflex}`
+        if (['guard', 'shield', 'privacy'].includes(data.reflex) && turn !== undefined && step !== undefined) return `t${turn}:s${step}:${data.reflex}`
         return `r${seq}`
       }
 
@@ -198,8 +199,9 @@ window.__ModuleLoader__.load({
         if (risk !== undefined) facts.push({ id: 'risk', label: 'Risk', value: `${level(RISK, Math.min(3, risk))} · ${risk.toFixed(2)} of 3`, bar: risk / 3, tone: risk >= 2.5 ? 'bad' : risk >= 1.8 ? 'warn' : 'ok' })
         if (leaks !== undefined) facts.push({ id: 'leaks', label: 'Leaks secrets', value: p2(leaks), bar: leaks, tone: leaks >= 0.7 ? 'bad' : undefined })
         if (onTask !== undefined) facts.push({ id: 'on-task', label: 'On task', value: p2(onTask), bar: onTask, tone: onTask < 0.15 ? 'warn' : undefined })
+        const danger = Array.isArray(row.danger) ? row.danger.filter(span => typeof span?.text === 'string' && span.text) : []
         return {
-          verdict: row.verdict, ...verdict, subject, facts, outcome, outcomeKey: outcome ? row.outcome : undefined, verdictTone: verdict.tone,
+          verdict: row.verdict, ...verdict, subject: danger.length ? { ...subject, marks: danger, kind: 'dangerous' } : subject, facts, outcome, outcomeKey: outcome ? row.outcome : undefined, verdictTone: verdict.tone,
           tone: outcome && SEVERITY[outcome.tone] > SEVERITY[verdict.tone] ? outcome.tone : verdict.tone,
           note: row.verdict !== 'allow' && row.why ? `Because ${row.why}.` : undefined,
         }
@@ -209,14 +211,33 @@ window.__ModuleLoader__.load({
         if (row.error) return errorView(row, { text: 'so the result was passed on unscreened', tone: 'muted' })
         const verdict = SHIELD[row.verdict] ?? SHIELD.clean
         const lines = num(row.removedLines) ?? 0
+        const spans = num(row.removedSpans) ?? 0
+        const what = spans ? `${plural(spans, 'span')} of text (${plural(num(row.removedChars) ?? 0, 'character')})` : plural(lines, 'line')
         return {
           verdict: row.verdict, ...verdict, subject: { tool: row.tool, text: row.call },
           facts: [
             { id: 'passages', label: 'Passages', value: String(num(row.passages) ?? '?') },
             { id: 'injection', label: 'Injection', value: p2(row.maxP), bar: num(row.maxP), tone: row.maxP >= 0.5 ? 'bad' : 'ok' },
+            ...(spans ? [{ id: 'spans', label: 'Spans removed', value: String(spans) }] : []),
           ],
-          note: row.verdict === 'removed' ? `Removed ${plural(lines, 'line')} that gave orders to AI agents before System Two read the result.`
-            : row.verdict === 'flagged' ? `Found ${plural(lines, 'line')} that give orders to AI agents; the result was withheld.` : undefined,
+          excerpts: Array.isArray(row.excerpts) ? { list: row.excerpts, kind: 'removed' } : undefined,
+          note: row.verdict === 'removed' ? `Removed ${what} that gave orders to AI agents before System Two read the result${spans ? '; the text around it stayed' : ''}.`
+            : row.verdict === 'flagged' ? `Found ${what} that give orders to AI agents; the result was withheld.` : undefined,
+        }
+      }
+
+      function privacyView(row) {
+        if (row.error) return errorView(row, { text: 'so the result went to System Two unmasked', tone: 'warn' })
+        const masked = num(row.masked) ?? 0
+        const labels = row.labels && typeof row.labels === 'object' ? Object.entries(row.labels).filter(([, n]) => num(n)) : []
+        return {
+          verdict: 'masked', label: 'Masked', short: 'masked', tone: 'info',
+          headline: `${plural(masked, 'personal detail')} masked${row.tool ? ` · ${row.tool}` : ''}`,
+          subject: row.call ? { tool: row.tool, text: row.call } : undefined,
+          facts: [{ id: 'masked', label: 'Masked', value: String(masked) }],
+          labels: labels.map(([label, n]) => ({ label, n })),
+          excerpts: Array.isArray(row.excerpts) ? { list: row.excerpts, kind: 'masked' } : undefined,
+          note: 'System Two read [LABEL] placeholders instead of these details.',
         }
       }
 
@@ -226,6 +247,7 @@ window.__ModuleLoader__.load({
         const why = DONE[row.why] ? row.why : row.verdict === 'continue' ? 'unfinished' : 'complete'
         const verdict = DONE[why]
         const round = `${num(row.steers) ?? '?'} of ${num(row.maxSteers) ?? '?'}`
+        const unsupported = num(row.unsupported) ?? 0
         return {
           verdict: row.verdict === 'continue' ? 'continue' : 'stop', ...verdict, why, short: verdict.label.toLowerCase(),
           headline: row.verdict === 'continue' ? `${verdict.label} to System Two (${round})` : why === 'waiting' ? 'Waiting on you' : 'The work is done',
@@ -233,9 +255,13 @@ window.__ModuleLoader__.load({
             { id: 'complete', label: 'Complete', value: p2(yesOf(a.complete)), bar: yesOf(a.complete), tone: yesOf(a.complete) < 0.5 ? 'warn' : 'ok' },
             { id: 'checked', label: 'Checked', value: p2(yesOf(a.checked)), bar: yesOf(a.checked) },
             { id: 'waiting', label: 'Waiting on you', value: p2(yesOf(a.waiting)), bar: yesOf(a.waiting) },
+            ...(row.spanModel ? [{ id: 'unsupported', label: 'Unsupported', value: String(unsupported), tone: unsupported ? 'warn' : 'ok' }] : []),
           ],
+          excerpts: unsupported && Array.isArray(row.excerpts) ? { list: row.excerpts, kind: 'unsupported' } : undefined,
           note: why === 'unfinished' ? `Not finished yet, so System Two goes back to work (${round}).`
-            : why === 'unchecked' ? `The changes were not checked, so System Two goes back to verify them (${round}).` : undefined,
+            : why === 'unchecked' ? `The changes were not checked, so System Two goes back to verify them (${round}).`
+              : why === 'unsupported' ? `Nothing System Two read supports ${plural(unsupported, 'claim')} in its answer, so it goes back to re-verify just ${unsupported === 1 ? 'that one' : 'those'} (${round}).`
+                : unsupported ? `Nothing System Two read supports ${plural(unsupported, 'claim')} in its answer.` : undefined,
         }
       }
 
@@ -245,6 +271,7 @@ window.__ModuleLoader__.load({
           case 'guard': return guardView(row)
           case 'shield': return shieldView(row)
           case 'done': return doneView(row)
+          case 'privacy': return privacyView(row)
           default: return row.error ? errorView(row) : { verdict: 'unknown', label: 'Decision', short: 'decision', tone: 'muted', facts: [] }
         }
       }
@@ -265,7 +292,7 @@ window.__ModuleLoader__.load({
           const key = view.outcome?.short ?? view.short
           counts.set(key, (counts.get(key) ?? 0) + 1)
         }
-        const noun = reflex === 'guard' ? 'call' : reflex === 'shield' ? 'result' : 'decision'
+        const noun = reflex === 'guard' ? 'call' : reflex === 'shield' || reflex === 'privacy' ? 'result' : 'decision'
         return [plural(views.length, noun), ...[...counts].map(([short, n]) => `${n} ${short}`)].join(' · ')
       }
 
@@ -274,7 +301,7 @@ window.__ModuleLoader__.load({
         const label = view.outcome ? `${view.label} → ${view.outcome.label}` : view.label
         const rest = []
         if (view.subject?.text) rest.push(`${view.subject.tool ?? ''} ${view.subject.text}`.trim())
-        const lead = view.facts.find(fact => ['risk', 'injection', 'complete', 'effort'].includes(fact.id))
+        const lead = view.facts.find(fact => ['risk', 'injection', 'complete', 'effort', 'masked'].includes(fact.id))
         if (lead) rest.push(`${lead.label.toLowerCase()} ${lead.value}`)
         if (view.error) rest.push(view.error)
         return { label, tone: view.tone, rest: rest.join(' · ') }
@@ -320,9 +347,41 @@ window.__ModuleLoader__.load({
           secs(ms) ? h('span', { className: 'vsr-s1__ms', 'data-system-one-part': 'latency' }, secs(ms)) : null)
       }
 
-      function Model({ model }) {
-        const name = fullModel(model)
-        return name ? h('b', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: name }, name) : null
+      function Model({ model, also }) {
+        const names = [...new Set([fullModel(model), fullModel(also)].filter(Boolean))]
+        return names.length ? h('b', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: names.join(' + ') }, names.join(' + ')) : null
+      }
+
+      // what a span model marked: removed injections, masked personal data (only its label), unsupported claims
+      function Mark({ mark, kind }) {
+        const p = num(mark.probability)
+        return h('mark', {
+          className: cx('vsr-s1__span', `vsr-s1__span--${kind}`),
+          'data-system-one-part': 'span',
+          'data-system-one-span-label': text(mark.label) || undefined,
+          'data-system-one-probability': p === undefined ? undefined : String(p),
+          title: [text(mark.label), p === undefined ? '' : p.toFixed(2)].filter(Boolean).join(' · '),
+        }, kind === 'masked' ? text(mark.label) || 'PII' : text(mark.text))
+      }
+
+      function Excerpts({ excerpts }) {
+        return h('div', { className: 'vsr-s1__excerpts', 'data-system-one-part': 'excerpts' },
+          excerpts.list.slice(0, 3).map((parts, index) => h('div', { key: index, className: 'vsr-s1__excerpt', 'data-system-one-part': 'excerpt' },
+            (Array.isArray(parts) ? parts : []).map((part, at) => (part?.mark ? h(Mark, { key: at, mark: part.mark, kind: excerpts.kind }) : h('span', { key: at }, text(part?.text)))))))
+      }
+
+      // the subject with each marked text highlighted where it first occurs
+      function Marked({ value, marks, kind }) {
+        const pieces = []
+        let rest = value
+        for (const mark of marks) {
+          const at = rest.indexOf(mark.text)
+          if (at < 0) continue
+          if (at > 0) pieces.push(rest.slice(0, at))
+          pieces.push(h(Mark, { key: pieces.length, mark, kind }))
+          rest = rest.slice(at + mark.text.length)
+        }
+        return [...pieces, rest]
       }
 
       function Pill({ tone, children, arrow, part }) {
@@ -350,8 +409,12 @@ window.__ModuleLoader__.load({
         h('div', { className: 'vsr-s1__main' },
           view.subject?.text ? h('div', { className: 'vsr-s1__subject', 'data-system-one-part': 'subject' },
             view.subject.tool ? h('span', { className: 'vsr-s1__tool' }, view.subject.tool) : null,
-            h('code', { className: 'vsr-s1__code', title: view.subject.text }, view.subject.text)) : null,
+            h('code', { className: 'vsr-s1__code', title: view.subject.text }, view.subject.marks ? h(Marked, { value: view.subject.text, marks: view.subject.marks, kind: view.subject.kind }) : view.subject.text)) : null,
+          view.subject?.marks && view.subject.marks.some(mark => !view.subject.text.includes(mark.text))
+            ? h('div', { className: 'vsr-s1__note', 'data-system-one-part': 'note' }, 'The dangerous part: ', view.subject.marks.map((mark, index) => h(Mark, { key: index, mark, kind: view.subject.kind }))) : null,
           view.facts.length ? h('div', { className: 'vsr-s1__facts', 'data-system-one-part': 'facts' }, view.facts.map(fact => h(Fact, { key: fact.id, ...fact }))) : null,
+          view.labels?.length ? h('div', { className: 'vsr-s1__labels', 'data-system-one-part': 'labels' }, view.labels.map(entry => h('span', { key: entry.label, className: 'vsr-s1__label', 'data-system-one-span-label': entry.label }, entry.label, h('b', null, String(entry.n))))) : null,
+          view.excerpts?.list?.length ? h(Excerpts, { excerpts: view.excerpts }) : null,
           view.note ? h('div', { className: 'vsr-s1__note', 'data-system-one-part': 'note' }, view.note) : null),
         !single && secs(row.ms) ? h('span', { className: 'vsr-s1__rowms', 'data-system-one-part': 'latency' }, secs(row.ms)) : null)
       }
@@ -366,6 +429,12 @@ window.__ModuleLoader__.load({
 
       const whole = value => (Number.isSafeInteger(value) ? String(value) : undefined)
 
+      // how many spans a span model marked in an element's decisions
+      function spanCount(state) {
+        const n = state.rows.reduce((sum, row) => sum + (num(row.removedSpans) ?? 0) + (num(row.masked) ?? 0) + (num(row.unsupported) ?? 0) + (Array.isArray(row.danger) ? row.danger.length : 0), 0)
+        return n ? String(n) : undefined
+      }
+
       // a public contract (README.md, "Selectors"); React leaves out an attribute whose value is undefined
       function attributes(kind, state, worst) {
         return {
@@ -379,6 +448,8 @@ window.__ModuleLoader__.load({
           'data-system-one-turn': whole(state.rows[0].turn),
           'data-system-one-step': state.reflex === 'guard' || state.reflex === 'shield' ? whole(state.rows[0].step) : undefined,
           'data-system-one-model': fullModel(state.rows[state.rows.length - 1].model) || undefined,
+          'data-system-one-span-model': fullModel(state.rows.find(row => row.spanModel)?.spanModel) || undefined,
+          'data-system-one-spans': spanCount(state) || undefined,
         }
       }
 
@@ -400,7 +471,7 @@ window.__ModuleLoader__.load({
           h(Badge, { key: idOf(last), id: idOf(last), ms: last.ms, time: last.time }),
           h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, reflex),
           h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
-          h(Model, { model: last.model })),
+          h(Model, { model: last.model, also: state.rows.find(row => row.spanModel)?.spanModel })),
         h(Rows, { reflex: state.reflex, rows: state.rows, views }))
       }
 
@@ -430,7 +501,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: said },
             h('span', { className: cx('vsr-s1__verdict', line.tone && `vsr-s1__verdict--${line.tone}`), 'data-system-one-part': 'verdict' }, line.label),
             line.rest ? ` · ${line.rest}` : null),
-          open ? h(Model, { model: last.model }) : null,
+          open ? h(Model, { model: last.model, also: state.rows.find(row => row.spanModel)?.spanModel }) : null,
           h(Chevron)),
         open ? h(Rows, { reflex: state.reflex, rows: state.rows, views }) : null)
       }
@@ -682,6 +753,18 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__bar>i{position:absolute;inset:0;border-radius:inherit;background:color-mix(in srgb,var(--vsr-s1-ember) 70%,var(--vsr-s1-text-3));transform-origin:left center;transform:scaleX(var(--p))}
 .vsr-s1__bar--ok>i{background:var(--vsr-s1-ok)}.vsr-s1__bar--warn>i{background:var(--vsr-s1-warn)}.vsr-s1__bar--bad>i{background:var(--vsr-s1-bad)}
 .vsr-s1__note{color:var(--vsr-s1-text-2);font-size:12.5px}
+.vsr-s1__span{padding:0 3px;border-radius:4px;color:inherit;background:none;font:inherit}
+.vsr-s1__span--removed{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 15%,transparent);text-decoration:line-through;text-decoration-thickness:1.5px}
+.vsr-s1__span--dangerous{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 17%,transparent);box-shadow:inset 0 -2px 0 var(--vsr-s1-bad);font-weight:650}
+.vsr-s1__span--unsupported{background:color-mix(in srgb,var(--vsr-s1-warn) 24%,transparent);text-decoration:underline wavy color-mix(in srgb,var(--vsr-s1-warn) 85%,var(--vsr-s1-text));text-decoration-thickness:1.5px;text-underline-offset:3px}
+.vsr-s1__span--masked{display:inline-block;padding:0 6px;color:var(--dsw-alias-bg-layer-1,#fff);background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--vsr-s1-text) 80%,transparent) 0 6px,color-mix(in srgb,var(--vsr-s1-text) 66%,transparent) 6px 12px);font-family:var(--vsr-s1-mono);font-size:11px;font-weight:650;letter-spacing:.02em;line-height:17px}
+.vsr-s1__excerpts{display:grid;gap:5px;margin:3px 0 1px}
+.vsr-s1__excerpt{padding:6px 9px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-ember) 50%,transparent);border-radius:0 6px 6px 0;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-text-3) 9%,transparent);font-family:var(--vsr-s1-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.vsr-s1--bad .vsr-s1__excerpt{border-left-color:color-mix(in srgb,var(--vsr-s1-bad) 55%,transparent)}
+.vsr-s1--warn .vsr-s1__excerpt{border-left-color:color-mix(in srgb,var(--vsr-s1-warn) 60%,transparent)}
+.vsr-s1__labels{display:flex;flex-wrap:wrap;gap:4px 6px}
+.vsr-s1__label{display:inline-flex;align-items:center;gap:5px;padding:0 7px;border-radius:5px;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-text-3) 14%,transparent);font-family:var(--vsr-s1-mono);font-size:11.5px;line-height:20px}
+.vsr-s1__label b{color:var(--vsr-s1-text);font-weight:650}
 .vsr-s1__rowms{color:var(--vsr-s1-text-3);font-size:12px;line-height:22px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .vsr-s1__more,.vsr-s1__link{justify-self:start;padding:0;border:0;background:none;color:var(--dsw-alias-link,#2F7BF6);font:inherit;font-size:12.5px;cursor:pointer}
 .vsr-s1__more:hover,.vsr-s1__link:hover{text-decoration:underline}
@@ -723,6 +806,8 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__badge--fresh::after{content:"";position:absolute;inset:-1px;border:2px solid var(--vsr-s1-ember);border-radius:inherit;pointer-events:none;animation:vsr-s1-ring .85s ease-out .06s both}
 .vsr-s1__row--fresh{animation:vsr-s1-row .34s cubic-bezier(.2,.8,.2,1) .06s both}
 .vsr-s1__row--fresh .vsr-s1__bar>i{animation:vsr-s1-fill .7s cubic-bezier(.2,.8,.2,1) .2s both}
+@keyframes vsr-s1-mark{0%{outline:2px solid color-mix(in srgb,var(--vsr-s1-ember) 70%,transparent);outline-offset:3px}100%{outline:2px solid transparent;outline-offset:0}}
+.vsr-s1__row--fresh .vsr-s1__span{animation:vsr-s1-mark .9s ease-out .35s both}
 .vsr-s1__stack--fresh>i{animation:vsr-s1-grow .6s cubic-bezier(.2,.8,.2,1) both}
 .vsr-s1--running .vsr-s1__dot{animation:vsr-s1-blink 1s ease-in-out infinite}
 .vsr-s1__shimmer{background:linear-gradient(90deg,var(--vsr-s1-text-2) 35%,var(--vsr-s1-ember) 50%,var(--vsr-s1-text-2) 65%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:vsr-s1-shimmer 1.6s linear infinite}

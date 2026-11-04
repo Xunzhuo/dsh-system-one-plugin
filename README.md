@@ -57,6 +57,22 @@ of your profile patch stay as they are.
 | Done-check | `agent/turn-stopping` | complete?, checked?, waiting for you? | an unfinished turn goes back once or twice to finish and verify |
 | Tool | `system_one` | any rubric the LLM writes, over a file of items or images | one result row per item (JSONL or CSV) and a summary |
 
+### Span answers (vllm-sr/vela3-turbo)
+
+`vllm-sr/vela3-turbo` also answers span questions: which words of a text carry a label, with code-point offsets and a
+probability each. Once the Decision API lists `span` for it (`spans: auto`, the default), four reflexes point at words
+instead of whole passages:
+
+- **Shield**: in a passage it flagged, the sentences that give orders go, and the text around them stays. The passage
+  is scored again without them, and a cut that leaves an injection behind falls back to removing lines.
+- **Guard**: a call it flags names the shell command that does the damage, in its card and its question.
+- **Done-check**: words of the final answer that nothing the turn read supports (preset `halu`) are marked, and
+  System Two goes back to re-verify just those.
+- **Privacy** (`privacy: true`, off by default): personal data in tool results (preset `pii`, 17 labels) becomes its
+  label, as `[EMAIL_ADDRESS]`, before System Two reads it: the nine sensitive labels by default (names, e-mail and
+  street addresses, phone, card, bank and ID numbers, IP addresses), while dates, organizations and places pass. A
+  small card shows what was masked, by label only.
+
 ## See it in the Web UI
 
 In `dsh web`, System One shows up in the conversation itself, where it acted, marked with an ember **System One**
@@ -72,6 +88,9 @@ badge that carries the decision's latency:
 - **`system_one` tool**: its row shows the batch: items, questions, each question's answer distribution and the
   results file.
 - **Free key**: a **System Duo** line under your first request when the plugin created a key, or could not.
+- **Spans** (vllm-sr/vela3-turbo): the words a span answer marked, in the card that used them: removed injections
+  struck through, a command's dangerous part, unsupported claims of the answer underlined, and masked personal data as
+  label chips in a **Privacy** card.
 
 Routine checks (an allowed call, a clean result) are one line and fold with the turn's work. Cards stay visible when
 the work folds, so a finished turn still shows what System One decided. Parallel calls in one step share one line or
@@ -89,22 +108,25 @@ attributes that say what it shows:
 | Attribute | Values |
 | --- | --- |
 | `data-system-one` | `card`, `compact` (one line), `tool` (the `system_one` row) or `notice` (the free-key line) |
-| `data-system-one-reflex` | `triage`, `guard`, `shield`, `done`, `tool` or `key` |
-| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; done-check `stop` or `continue`; tool `running` or `done`; key `created` or `failed`; `error` when System One did not answer |
+| `data-system-one-reflex` | `triage`, `guard`, `shield`, `privacy`, `done`, `tool` or `key` |
+| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; privacy `masked`; done-check `stop` or `continue`; tool `running` or `done`; key `created` or `failed`; `error` when System One did not answer |
 | `data-system-one-outcome` | guard, once you answer its approval: `allowed`, `rejected`, `cancelled` or `failed` |
-| `data-system-one-why` | done-check: `complete`, `waiting`, `unfinished` or `unchecked` |
+| `data-system-one-why` | done-check: `complete`, `waiting`, `unfinished`, `unchecked` or `unsupported` |
 | `data-system-one-tone` | its colour: `ok` (green), `info` (ember), `warn` (amber), `bad` (red) or `muted` |
 | `data-system-one-count` | how many decisions it holds (a batch: how many items) |
 | `data-system-one-turn`, `data-system-one-step` | where it acted (the step for guard and shield) |
 | `data-system-one-model` | the model that answered, as `vllm-sr/d3-ultra` |
+| `data-system-one-span-model`, `data-system-one-spans` | the span model that marked words, as `vllm-sr/vela3-turbo`, and how many |
 
 Inside a root, `data-system-one-part` marks `badge` (the ember **System One** pill), `latency`, `reflex`, `summary`,
 `model`, `head`, `toggle` (the button of a one-line element), `rows`, `verdict`, `outcome`, `subject`, `facts`,
 `note` and `more`, in the batch row also `stack`, `legend`, `failed`, `results` and `raw`, and in the free-key line
-`badge` (the **System Duo** pill), `summary` and `links`. Each number is a
-`data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (triage), `risk`, `leaks` and `on-task` (guard),
-`passages` and `injection` (shield), `complete`, `checked` and `waiting` (done-check). Decision rows carry
-`data-system-one-decision` and `data-system-one-call`, batch questions `data-system-one-question`. For example:
+`badge` (the **System Duo** pill), `summary` and `links`. Span answers add `excerpts`, each `excerpt`, every marked
+`span` (with `data-system-one-span-label` and `data-system-one-probability`) and, in a Privacy card, the `labels`. Each
+number is a `data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (triage), `risk`, `leaks` and `on-task`
+(guard), `passages`, `injection` and `spans` (shield), `masked` (privacy), `complete`, `checked`, `waiting` and
+`unsupported` (done-check). Decision rows carry `data-system-one-decision` and `data-system-one-call`, batch questions
+`data-system-one-question`. For example:
 
 | Element | Selector |
 | --- | --- |
@@ -120,11 +142,15 @@ Inside a root, `data-system-one-part` marks `badge` (the ember **System One** pi
 | The reason | `[data-system-one-part="note"]` |
 | The model's name (bold) | `[data-system-one-part="model"]` |
 | Free key created | `[data-system-one="notice"][data-system-one-verdict="created"]` |
+| The words a span answer marked | `[data-system-one-part="span"]` (`[data-system-one-span-label="INJECTION"]`, `"DANGEROUS"`, `"unsupported"`, a PII label) |
+| Privacy card | `[data-system-one-reflex="privacy"][data-system-one-verdict="masked"]` |
+| Done-check that sent claims back | `[data-system-one-reflex="done"][data-system-one-why="unsupported"]` |
 
 ## Your data
 
 System One sends what it decides about: the user's request (clipped), each tool call it reviews, the passages of tool
-results it screens, the end of the turn, and the items given to the `system_one` tool. System Two receives the
+results it screens, the end of the turn (with what the turn read, for the done-check's span answer), and the items
+given to the `system_one` tool. With `privacy: true`, the results of `privacyTools` go to System One whole. System Two receives the
 conversation as any LLM provider does. System Duo logs requests to improve the services and to train models; read its
 [terms](https://app.vllm-sr.ai/terms) and [privacy](https://app.vllm-sr.ai/privacy) pages before you use it with
 private code or data. Each reflex can be turned off.
@@ -158,10 +184,24 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
     tool: true
     trace: ~/.dsh/system-one/trace.jsonl   # or off
     systemOneUi: card              # how Chat shows System One: card, compact (one line each) or off
+    spans: auto                    # span answers: auto (once spanModel lists span), on or off
+    spanModel: vllm-sr/vela3-turbo
+    shieldSpans: true              # remove injected words, not lines
+    guardSpans: true               # name the dangerous part of a flagged call
+    doneHalu: true                 # send unsupported claims back
+    doneHaluAt: 0.6                # the lowest probability of an unsupported word that counts
+    privacy: false                 # mask personal data before System Two reads it
+    privacyAt: 0.5                 # the lowest probability of a personal-data span that is masked
+    privacyLabels: [PERSON, EMAIL_ADDRESS, PHONE_NUMBER, STREET_ADDRESS, CREDIT_CARD, IBAN_CODE, US_SSN, US_DRIVER_LICENSE, IP_ADDRESS]
+    privacyTools: [web_fetch, bash, read]
 ```
 
 `systemOneUi` applies to decisions made after a restart with the new value; decisions already in a session keep the
 form they were recorded with. The tool's custom row is drawn for the default `toolName`, `system_one`.
+
+With `privacy: true`, System Two sees `[LABEL]` placeholders instead of personal data in the results of
+`privacyTools`, so it cannot copy a real value into a file it writes from what it read; it is told to ask you
+instead. Span records keep labels and offsets of personal data, never the data itself.
 
 The key comes from the credential reference `VLLM_SR_API_KEY` (`llmKeyEnv`), which both systems use. A separate
 System One key in `DECISION_API_KEY` (`apiKeyEnv`), as plugin 0.2 kept it, still wins for System One; a 0.2 key for

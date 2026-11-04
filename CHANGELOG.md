@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.0 (2026-11-04)
+
+System One points at words: `vllm-sr/vela3-turbo` answers span questions, and four reflexes use them.
+
+- **Shield**: in a passage it flagged, the span model marks the sentences that give orders, and only those go, as
+  whole sentences; the text around them stays. The passage is scored again without them before the cut is trusted,
+  and a cut that leaves an injection behind, or a span answer that fails, leaves the line removal of 0.4 to do it. The
+  read tool's line numbers come off for the span model and its cuts are mapped back onto them. The injection card
+  shows the removed text struck through.
+- **Guard**: a call it flags names its dangerous part, the whole shell command the span sits in (as
+  `git reset --hard v1.3`), highlighted in the card and quoted in the approval question and the block reason. Allowed
+  calls cost no span question.
+- **Done-check**: the words of the final answer that nothing the turn read supports (preset `halu`) are underlined in
+  the card, and System Two goes back to re-verify just those claims.
+- **Privacy** (`privacy: true`, off by default): personal data in the results of `privacyTools` (preset `pii`) becomes
+  its label, as `[EMAIL_ADDRESS]`, before System Two reads it: by default the nine sensitive labels vllm-sr's router
+  masks, while dates, organizations and places pass. A Privacy card shows what was masked, by label only;
+  records never hold the data. Asked for while no span model answers, it says so once a session.
+- `spans: auto` (the default) turns this on once the Decision API lists `span` for `spanModel`
+  (`vllm-sr/vela3-turbo`); `on` and `off` force it. Switches: `shieldSpans`, `guardSpans`, `doneHalu`, `doneHaluAt`,
+  `privacy`, `privacyAt`, `privacyLabels`, `privacyTools`.
+- Chat names both models of a decision that used a span answer, in bold, as **vllm-sr/d3-ultra + vllm-sr/vela3-turbo**.
+  New selectors: `[data-system-one-part="span"]` (with `data-system-one-span-label` and `data-system-one-probability`),
+  `excerpts`, `excerpt`, `labels`, the root's `data-system-one-span-model` and `data-system-one-spans`, reflex
+  `privacy` and the done-check's why `unsupported`.
+- The Decision client returns each input's span answers and thresholds, and lists the published models.
+
 ## 0.4.2 (2026-11-04)
 
 - Chat names System One's model in full and in bold, as **vllm-sr/d3-ultra**: in a card's head, in a one-line element

@@ -86,5 +86,36 @@ export const DONE = {
   },
 }
 
+// Span questions, for the models that answer them (Vela 3.0). Each reads one field of a structured state (`over`).
+
+/**
+ * In a passage the shield flagged: the text that gives an AI agent orders. Below vela3-turbo's default threshold its
+ * spans reach every sentence of an injection, not only its loudest words; the shield grows them to whole sentences and
+ * scores the passage again before it trusts the cut.
+ */
+export const INJECTION_SPANS = {
+  injected: {
+    type: 'span',
+    criteria: { INJECTION: 'Every sentence addressed to an AI agent or assistant that tells it what to do, what to run or what to hide from the user' },
+    over: 'passage',
+    threshold: 0.4,
+  },
+}
+
+/** In a call the guard flagged: the part of the command that does the damage. */
+export const DANGER_SPANS = {
+  dangerous: {
+    type: 'span',
+    criteria: { DANGEROUS: 'The part of the command that deletes, overwrites, rewrites history, exposes secrets or cannot be undone' },
+    over: 'command',
+  },
+}
+
+/** Personal data (the model's 17 labels), in text before System Two reads it. */
+export const PII_SPANS = { pii: { preset: 'pii' } }
+
+/** Words of the state's `answer` that its `context` does not support. */
+export const HALU_SPANS = { halu: { preset: 'halu' } }
+
 export const RISK_LEVELS = ['Safe', 'Normal', 'Dangerous', 'Critical']
 export const EFFORT_LEVELS = ['trivial', 'small', 'medium', 'large']

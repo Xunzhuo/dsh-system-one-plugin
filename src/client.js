@@ -156,8 +156,8 @@ export function createDecisionClient(options) {
    * @param {AbortSignal} [request.signal]
    * @param {number} [request.timeoutMs] - per-call deadline (default: the client's)
    * @param {number} [request.retries] - per-call retries (default: the client's)
-   * @returns {Promise<{answers: object[], ms: number, model: string, inputTokens: number, requestId?: string}>}
-   *   answers in input order
+   * @returns {Promise<{answers: object[], spans: object[], thresholds: object[], ms: number, model: string, inputTokens: number, requestId?: string}>}
+   *   answers, span answers and the thresholds applied, in input order
    */
   async function ask({ model, questions, inputs, signal, timeoutMs: callTimeoutMs, retries: callRetries }) {
     if (inputs.length === 0 || inputs.length > ITEMS_PER_REQUEST) {
@@ -176,10 +176,10 @@ export function createDecisionClient(options) {
     const started = performance.now()
     try {
       const { json, requestId } = await post('/v1/decisions', body, signal, { timeoutMs: callTimeoutMs, retries: callRetries })
-      const answers = [json.answers, ...rest.map((_, index) => json.states?.[`i${index + 1}`]?.answers ?? {})]
+      const each = field => [json[field] ?? {}, ...rest.map((_, index) => json.states?.[`i${index + 1}`]?.[field] ?? {})]
       let inputTokens = json.usage?.input_tokens ?? 0
       for (const entry of Object.values(json.states ?? {})) inputTokens += entry.usage?.input_tokens ?? 0
-      return { answers, ms: performance.now() - started, model: json.model ?? model, inputTokens, requestId }
+      return { answers: each('answers'), spans: each('spans'), thresholds: each('thresholds'), ms: performance.now() - started, model: json.model ?? model, inputTokens, requestId }
     } finally {
       release()
     }
@@ -190,7 +190,15 @@ export function createDecisionClient(options) {
     send('/api/info', 'GET', undefined, {}, AbortSignal.timeout(timeoutMs)).catch(() => {})
   }
 
-  return { ask, warm, hasKey: async () => Boolean(await apiKey()), close: () => agent.destroy() }
+  /** The published models' cards (no key needed): `[{id, question_types, presets}]`. */
+  async function models(signal) {
+    const response = await send('/v1/systemone/models', 'GET', undefined, { accept: 'application/json' }, signal ?? AbortSignal.timeout(timeoutMs))
+    if (response.status !== 200) throw new DecisionError(`Decision API ${response.status} listing models`, response.status)
+    const cards = JSON.parse(response.text)?.data
+    return Array.isArray(cards) ? cards : []
+  }
+
+  return { ask, warm, models, hasKey: async () => Boolean(await apiKey()), close: () => agent.destroy() }
 }
 
 /** Probability that a noul answer is yes, or undefined when the question failed. */
