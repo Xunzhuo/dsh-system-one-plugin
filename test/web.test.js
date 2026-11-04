@@ -142,8 +142,8 @@ test('records group into one card per triage, per guard or shield step, and per 
   ])
   assert.deepEqual(nodes.map(node => [node.id, node.data.reflex, node.data.rows.length, node.groupTree]), [
     ['t1:triage', 'triage', 1, 'turn'],
-    ['t1:s2:guard', 'guard', 2, undefined],
-    ['t1:s2:shield', 'shield', 1, undefined],
+    ['t1:s2:guard', 'guard', 2, 'turn'],
+    ['t1:s2:shield', 'shield', 1, 'turn'],
     ['t1:s3:guard', 'guard', 1, 'turn'],
     [`r${seq - 3}`, 'done', 1, 'turn'],
   ])
@@ -375,7 +375,7 @@ test('a routine check is one line, compact mode makes every card one line, and a
   const [failed] = assemble(exports.definition, [record({ reflex: 'guard', callId: 'c2', tool: 'bash', call: 'make', verdict: 'allow', error: 'Decision API unreachable: timeout', model: undefined, ms: undefined })])
   const text = spoken(render(exports.SystemOneNode({ node: failed })))
   assert.equal(text, 'System One · Guard · Unavailable · bash make · Decision API unreachable: timeout')
-  assert.equal(failed.groupTree, undefined)
+  assert.equal(failed.groupTree, 'turn')
   assert.equal(exports.viewOf('guard', failed.data.rows[0]).note, 'System One did not answer (Decision API unreachable: timeout), so the call ran.')
 })
 
@@ -420,7 +420,7 @@ test('a decision still deciding is one busy line, and its answer takes its place
   const { exports } = load()
   const pending = record({ reflex: 'guard', step: 3, callId: 'c1', tool: 'bash', call: 'git push --force origin main', decision: 'd1', pending: true, model: undefined, ms: undefined })
   const [waiting] = assemble(exports.definition, [pending])
-  assert.equal(waiting.groupTree, undefined, 'it folds with the work until it has an answer')
+  assert.equal(waiting.groupTree, 'turn', 'it never folds away with the work it checks')
   const line = render(exports.SystemOneNode({ node: waiting }))
   const [root] = findAll(line, props => props['data-system-one'])
   assert.deepEqual(attrs(root, ['', 'reflex', 'verdict', 'tone']), { '': 'compact', reflex: 'guard', verdict: 'deciding', tone: 'info' })
@@ -460,7 +460,7 @@ test('a decision still deciding is one busy line, and its answer takes its place
 
   // privacy with nothing to mask is a routine line
   const [clean] = assemble(exports.definition, [record({ reflex: 'privacy', callId: 'c3', tool: 'read', call: 'notes.md', model: 'vllm-sr/vela3-turbo', verdict: 'clean', masked: 0 })])
-  assert.equal(clean.groupTree, undefined)
+  assert.equal(clean.groupTree, 'turn')
   assert.equal(spoken(render(exports.SystemOneNode({ node: clean }))), 'System One · 480 ms · Privacy · Nothing to mask · read notes.md · masked 0')
 })
 
@@ -697,6 +697,54 @@ test('the system_one_screen row shows the screenshot, where to click, what it sh
   assert.match(rootOf(compact).props.className, /vsr-s1--compact/)
   assert.ok(!parts(compact).includes('shot'), 'a compact row opens on demand')
   assert.ok(spoken(compact).includes('System One · 1.4 s · Screen · found 1 of 2 · not the expected screen · the action did not work · shots/after.png'), spoken(compact))
+})
+
+test('a system_one call keeps one line in its turn once the turn ends and folds the call\'s own row away', () => {
+  const { exports } = load()
+  const batch = { systemOne: 1, ui: 'card', model: 'vllm-sr/d3-ultra', items: 230, questions: 3, requests: 26, seconds: 4.12, output: '/work/support/tickets.s1.jsonl',
+    summary: { team: { type: 'choice', counts: { billing: 61, engineering: 58 }, unsure: [], unsureCount: 0, failed: 0 } } }
+  const screen = { systemOneScreen: 1, ui: 'card', model: 'vllm-sr/vela3-turbo', seconds: 0.58, requests: 1, image: 'shots/03-click.png', imagePath: '/work/shots/03-click.png', size: { width: 1280, height: 800 },
+    action: { text: 'click "Pay now"', before: 'shots/02-open.png', beforePath: '/work/shots/02-open.png', succeeded: 0.03 } }
+  const [tool, look, broken] = assemble(exports.definition, [
+    record({ reflex: 'tool', callId: 'call-7', tool: 'system_one', session: 's-1', meta: batch, model: undefined, ms: undefined }),
+    record({ reflex: 'screen', callId: 'call-8', tool: 'system_one_screen', session: 's-1', meta: screen, model: undefined, ms: undefined }),
+    record({ reflex: 'tool', callId: 'call-9', tool: 'system_one', session: 's-1', error: 'questions must be an object', model: undefined, ms: undefined }),
+  ])
+  assert.deepEqual([tool, look, broken].map(node => [node.id, node.groupTree]), [['c:call-7', 'turn'], ['c:call-8', 'turn'], ['c:call-9', 'turn']])
+  const at = (node, status) => ({ ...node, location: { kind: 'step', turn: { status } } })
+
+  // while the turn runs, the call's own row shows its card
+  assert.equal(render(exports.SystemOneNode({ node: at(tool, 'open'), cwd: '/work' })), null)
+
+  const rootOf = tree => findAll(tree, props => props['data-system-one'])[0]
+  const line = render(exports.SystemOneNode({ node: at(tool, 'closed'), cwd: '/work' }))
+  assert.deepEqual(attrs(rootOf(line), ['', 'reflex', 'verdict', 'call', 'model']), { '': 'tool', reflex: 'tool', verdict: 'done', call: 'call-7', model: 'vllm-sr/d3-ultra' })
+  assert.match(rootOf(line).props.className, /vsr-s1--compact/)
+  assert.equal(spoken(line), 'System One · 4.1 s · Batch · 230 items · team: billing 61, engineering 58')
+  assert.ok(parts(line).includes('verdict') && !parts(line).includes('stack'), 'it says what the batch found, and its card opens on demand')
+  // the first question's answers, whatever its kind
+  const lineOf = summary => spoken(render(exports.SystemOneNode({ node: at({ ...tool, data: { ...tool.data, rows: [{ ...tool.data.rows[0], meta: { ...batch, summary } }] } }, 'closed'), cwd: '/work' })))
+  assert.equal(lineOf({ urgent: { type: 'noul', yes: 12, no: 218 }, team: batch.summary.team }), 'System One · 4.1 s · Batch · 230 items · urgent: yes 12 of 230 (+1 question)')
+  assert.equal(lineOf({ urgency: { type: 'score', mean: 1.42 } }), 'System One · 4.1 s · Batch · 230 items · urgency: mean 1.42')
+  assert.equal(lineOf({ notice: { type: 'box', found: 5, of: 12 } }), 'System One · 4.1 s · Batch · 230 items · notice: found in 5 of 12')
+  assert.equal(lineOf({ pii: { type: 'span', preset: 'pii', labels: { PERSON: 40 }, items: 31, of: 230 } }), 'System One · 4.1 s · Batch · 230 items · pii: personal data in 31 of 230')
+  assert.equal(lineOf({ marks: { type: 'span', labels: { ERROR: 52, COMPETITOR: 9 }, items: 44, of: 230 } }), 'System One · 4.1 s · Batch · 230 items · marks: ERROR 52, COMPETITOR 9')
+  assert.equal(lineOf({}), 'System One · 4.1 s · Batch · 230 items · 3 questions · 26 requests')
+
+  const seen = render(exports.SystemOneNode({ node: at(look, 'closed'), cwd: '/work' }))
+  assert.deepEqual(attrs(rootOf(seen), ['', 'verdict', 'tone', 'action']), { '': 'screen', verdict: 'done', tone: 'bad', action: 'failed' })
+  assert.equal(spoken(seen), 'System One · 580 ms · Screen · the action did not work · shots/03-click.png')
+
+  const failed = render(exports.SystemOneNode({ node: at(broken, 'closed'), cwd: '/work' }))
+  assert.deepEqual(attrs(rootOf(failed), ['', 'verdict', 'tone']), { '': 'tool', verdict: 'error', tone: 'bad' })
+  assert.equal(spoken(failed), 'System One · Error: questions must be an object')
+
+  // opened, the line is the call's card, with the screenshots read in the call's session
+  const opened = { ...fakeReact, useState: init => [init === false ? true : typeof init === 'function' ? init() : init, () => {}] }
+  const { exports: open } = load({ require: specifier => (specifier === 'react' ? opened : assert.fail(specifier)) })
+  const card = render(open.SystemOneNode({ node: at(look, 'closed'), cwd: '/work' }))
+  assert.ok(parts(card).includes('action') && textOf(card).includes('Did not work 0.03'), textOf(card))
+  assert.deepEqual(findAll(card, props => props['data-system-one-part'] === 'shot').map(shot => shot.props['data-system-one-image']), ['03-click.png', '02-open.png', '03-click.png'])
 })
 
 test('a done-check shows the passages of what System Two read that back its answer', () => {

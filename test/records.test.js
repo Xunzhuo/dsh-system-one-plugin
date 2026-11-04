@@ -123,9 +123,10 @@ function fakeDecisions({ delayMs = 0 } = {}) {
     const out = {}
     for (const [id, question] of Object.entries(questions)) {
       if (question.preset === 'pii') {
-        // like the real model, it also takes a file's owner and group, the machine's account, for one person
+        // like the real model, it also takes a file's owner and group, the machine's account, for one person, and a
+        // home directory for its owner
         const account = userInfo().username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION'), ...spansIn(state, ` ${account} ${account} `, 'PERSON').map(span => ({ ...span, start: span.start + 1, end: span.end - 1, text: span.text.trim() })), ...spansIn(state, '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', 'IP_ADDRESS')]
+        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION'), ...spansIn(state, ` ${account} ${account} `, 'PERSON').map(span => ({ ...span, start: span.start + 1, end: span.end - 1, text: span.text.trim() })), ...spansIn(state, '/home/[A-Za-z0-9_.-]+', 'PERSON'), ...spansIn(state, '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', 'IP_ADDRESS')]
       } else if (question.preset === 'halu') {
         out[id] = state.context.includes('MIT') ? [] : spansIn(state.answer, 'MIT licensed', 'unsupported')
       } else if (question.type === 'span' && question.over === 'context') {
@@ -260,6 +261,28 @@ test('each reflex writes one record per System One call, with the answers and wh
   assert.deepEqual([done.reflex, done.turn, done.step, done.verdict, done.why, done.steers, done.maxSteers, done.calls], ['done', 1, 2, 'stop', 'complete', 0, 2, 2])
   assert.deepEqual(done.answers.complete, { yes: 0.94 })
   assert.equal(agent.steered, undefined)
+})
+
+test('a system_one call is recorded with its result facts, so the Web UI keeps its line once the turn folds', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const { server, url } = await fakeDecisions()
+  const plugin = await import('../src/index.js')
+  const { ctx, config, handlers, agent, close } = harness(url, { triage: false })
+  t.after(() => {
+    close()
+    server.close()
+  })
+  plugin.apply(ctx, config)
+  const user = { role: 'user', content: [{ type: 'text', text: 'Route every ticket.' }], source: { kind: 'user' } }
+  await handlers.get('agent/pre-step')({ agent, messages: [user], turn: 2, step: 3 }, async () => ({ kind: 'enter', messages: [] }))
+  const meta = { systemOne: 1, ui: 'card', model: 'vllm-sr/d3-ultra', items: 230, questions: 1, requests: 26, seconds: 4.1, summary: { team: { type: 'choice', counts: { billing: 61 } } } }
+  handlers.get('tools/result')({ name: 'system_one', callId: 's1', arguments: { file: 'support/tickets.jsonl' }, agent }, { isError: false, content: [{ type: 'text', text: 'System One answered 1 question(s) for 230 item(s).' }], meta })
+  handlers.get('tools/result')({ name: 'system_one_screen', callId: 's2', arguments: { image: 'shots/x.png' }, agent }, { isError: true, error: { message: 'shots/x.png is not a PNG, JPEG or WebP image' }, content: [] })
+  handlers.get('tools/result')({ name: 'bash', callId: 'b1', arguments: { command: 'ls' }, agent }, { isError: false, content: [] })
+  assert.deepEqual(agent.session.records.map(entry => entry.data), [
+    { v: 1, ui: 'card', reflex: 'tool', turn: 2, step: 3, callId: 's1', tool: 'system_one', session: agent.session.id, meta },
+    { v: 1, ui: 'card', reflex: 'screen', turn: 2, step: 3, callId: 's2', tool: 'system_one_screen', session: agent.session.id, error: 'shots/x.png is not a PNG, JPEG or WebP image' },
+  ])
 })
 
 test('a slow decision shows as deciding first, and its answer takes that record\'s place', async t => {
@@ -590,13 +613,13 @@ test('privacy leaves the machine\'s own names, local addresses and the request\'
   const user = { role: 'user', content: [{ type: 'text', text: 'Set the billing contact to ops@example.com.' }], source: { kind: 'user' } }
   await handlers.get('agent/pre-step')({ agent, messages: [user], turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
   const account = userInfo().username
-  const listing = `-rw-r--r-- 1 ${account} ${account} 52753 Nov  4 21:42 api-error-rate.png\n-rw-r--r-- 1 ${account} ${account} 34348 Nov  4 21:42 notes.txt\nThe console runs at http://127.0.0.1:8765/ and the printer at 192.168.1.20; typed ops@example.com`
+  const listing = `/home/${account}/work\n-rw-r--r-- 1 ${account} ${account} 52753 Nov  4 21:42 api-error-rate.png\n-rw-r--r-- 1 ${account} ${account} 34348 Nov  4 21:42 notes.txt\nThe console runs at http://127.0.0.1:8765/ and the printer at 192.168.1.20; typed ops@example.com`
   const clean = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l1', arguments: { command: 'ls -la' }, agent }, { isError: false, content: [{ type: 'text', text: listing }] }, async () => ({ kind: 'accept', untouched: true }))
   assert.equal(clean.untouched, true, 'nothing to mask')
   assert.deepEqual([agent.session.records.at(-1).data.verdict, agent.session.records.at(-1).data.masked], ['clean', 0])
-  const mixed = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l2', arguments: { command: 'cat owners.txt' }, agent }, { isError: false, content: [{ type: 'text', text: `${listing}\nowner: Ada Lovelace <ada@example.com>, seen from 203.0.113.7` }] }, async () => ({ kind: 'accept' }))
-  assert.ok(mixed.content[0].text.endsWith(`${listing}\nowner: [PERSON] <[EMAIL_ADDRESS]>, seen from [IP_ADDRESS]`), mixed.content[0].text)
-  assert.deepEqual(agent.session.records.at(-1).data.labels, { PERSON: 1, EMAIL_ADDRESS: 1, IP_ADDRESS: 1 })
+  const mixed = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l2', arguments: { command: 'cat owners.txt' }, agent }, { isError: false, content: [{ type: 'text', text: `${listing}\nowner: Ada Lovelace <ada@example.com>, seen from 203.0.113.7, files in /home/margaret/shared` }] }, async () => ({ kind: 'accept' }))
+  assert.ok(mixed.content[0].text.endsWith(`${listing}\nowner: [PERSON] <[EMAIL_ADDRESS]>, seen from [IP_ADDRESS], files in [PERSON]/shared`), mixed.content[0].text)
+  assert.deepEqual(agent.session.records.at(-1).data.labels, { PERSON: 2, EMAIL_ADDRESS: 1, IP_ADDRESS: 1 })
 })
 
 test('spans stay off while the span model does not list them', async t => {

@@ -146,10 +146,12 @@ window.__ModuleLoader__.load({
         return data && typeof data === 'object' && data.v === 1 && typeof data.reflex === 'string' ? data : undefined
       }
 
-      // one card per triage of a turn, per guard, shield or privacy step (parallel calls share it), per done-check
+      // one card per triage of a turn, per guard, shield or privacy step (parallel calls share it), per done-check, per
+      // system_one call
       function groupOf(data, seq) {
         const turn = Number.isSafeInteger(data.turn) ? data.turn : undefined
         const step = Number.isSafeInteger(data.step) ? data.step : undefined
+        if ((data.reflex === 'tool' || data.reflex === 'screen') && typeof data.callId === 'string') return `c:${data.callId}`
         if (data.reflex === 'triage' && turn !== undefined) return `t${turn}:triage`
         if (['guard', 'shield', 'privacy'].includes(data.reflex) && turn !== undefined && step !== undefined) return `t${turn}:s${step}:${data.reflex}`
         // a done-check that was still deciding and its answer share one element
@@ -183,8 +185,8 @@ window.__ModuleLoader__.load({
         return { ...base, rows: [...base.rows, row] }
       }
 
-      // Triage and done-check frame the turn and stay visible when it folds; so does a guard or shield card that
-      // stopped something. A routine one sits with the work it checked and folds with it.
+      // Triage and done-check frame the turn, and so does a guard or shield decision that stopped something: those are
+      // cards. A routine one is one line.
       function standsOut(state) {
         // a decision still deciding, or stopped, is one line until its answer comes
         if (state.rows.every(row => row.pending || row.verdict === 'cancelled')) return false
@@ -218,7 +220,9 @@ window.__ModuleLoader__.load({
             anchorSeq: first?.event?.seq ?? state.rows[0].seq,
             location: first?.location ?? { kind: 'unresolved' },
             visibility: 'visible',
-            groupTree: standsOut(state) ? 'turn' : undefined,
+            // outside the groups a finished turn folds its work into ("Ran commands", "Completed in"): System One
+            // never folds away with it
+            groupTree: 'turn',
             data: state,
           }
         },
@@ -740,12 +744,27 @@ window.__ModuleLoader__.load({
         ]))
       }
 
+      const turnOpen = node => {
+        const location = node?.location
+        return (location?.kind === 'turn' || location?.kind === 'step') && location.turn?.status === 'open'
+      }
+
+      // A system_one call draws its card in its own tool row while the turn runs. Once the turn ends, DeepSeek Harness
+      // folds its tool calls away, and the call's line stays in the turn, its card one click away.
+      function CallLine({ state, cwd, openFile, sessionId }) {
+        const row = state.rows[state.rows.length - 1]
+        const meta = row.meta && typeof row.meta === 'object' ? { ...row.meta, ui: 'compact' } : undefined
+        const block = { time: row.time, isError: Boolean(row.error), content: row.error ? [{ type: 'text', text: `Error: ${text(row.error)}` }] : [], meta, call: { argsRaw: '{}' } }
+        return h(state.reflex === 'screen' ? ScreenRow : ToolRow, { block, phase: 'result', callId: row.callId, cwd, openFile, sessionId: sessionId ?? row.session })
+      }
+
       // A routine check (an allowed call, a clean result) is one line in either mode; a decision that changed
       // something, and the triage and done-check that frame the turn, are cards unless the mode is compact.
       function SystemOneNode(props) {
         const state = props?.node?.data
         if (!state || !Array.isArray(state.rows) || state.rows.length === 0) return null
         if (state.reflex === 'key') return h(Contained, null, h(KeyNotice, { state }))
+        if (state.reflex === 'tool' || state.reflex === 'screen') return turnOpen(props.node) ? null : h(Contained, null, h(CallLine, { ...props, state }))
         const slim = state.ui === 'compact' || !standsOut(state)
         return h(Contained, null, h(slim ? Compact : Card, { state }))
       }
@@ -991,6 +1010,26 @@ window.__ModuleLoader__.load({
         body)
       }
 
+      // what a batch found, in a few words: its first question's answers
+      function batchSaid(summary) {
+        const entries = Object.entries(summary && typeof summary === 'object' ? summary : {}).filter(([, s]) => s && typeof s === 'object')
+        if (!entries.length) return ''
+        const [id, s] = entries[0]
+        const top = counts => Object.entries(counts ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, n]) => `${name} ${n}`).join(', ')
+        const share = `${num(s.items) ?? 0} of ${num(s.of) ?? 0}`
+        const said = s.type === 'choice' ? top(s.counts)
+          : s.type === 'noul' ? `yes ${num(s.yes) ?? 0} of ${(num(s.yes) ?? 0) + (num(s.no) ?? 0)}`
+            : s.type === 'score' ? (num(s.mean) === undefined ? '' : `mean ${s.mean}`)
+              : s.type === 'box' ? `found in ${num(s.found) ?? 0} of ${num(s.of) ?? 0}`
+                : s.type !== 'span' ? ''
+                  : s.preset === 'pii' ? `personal data in ${share}`
+                    : s.preset === 'halu' ? `unsupported words in ${share}`
+                      : s.preset === 'evidence' ? `backed in ${share}`
+                        : top(s.labels) || 'nothing marked'
+        if (!said) return ''
+        return `${id}: ${said}${entries.length > 1 ? ` (+${plural(entries.length - 1, 'question')})` : ''}`
+      }
+
       function ToolRow(props) {
         const { block, phase, callId, cwd, openFile, sessionId } = props
         const args = parseArgs(phase === 'result' ? block?.call?.argsRaw : block?.argsRaw)
@@ -1008,6 +1047,8 @@ window.__ModuleLoader__.load({
         if (block?.isError || !meta || ui === 'off') return h(Plain, { block, common, what: 'batch' })
 
         const headline = [plural(num(meta.items) ?? 0, 'item'), plural(num(meta.questions) ?? 0, 'question'), plural(num(meta.requests) ?? 0, 'request')].join(' · ')
+        // one line says what the batch found; a card shows it below its head
+        const said = ui === 'compact' ? batchSaid(meta.summary) : ''
         const marked = markedIn(meta.summary)
         const done = {
           'data-system-one-verdict': 'done', 'data-system-one-tone': 'ok', 'data-system-one-count': String(meta.items ?? ''),
@@ -1018,7 +1059,10 @@ window.__ModuleLoader__.load({
         return h(ResultRow, {
           kind: ui === 'compact' ? 'compact' : 'card', common, done, reflex: REFLEX.tool, tone: 'ok', fresh, label: `System One batch: ${headline}`,
           ms: num(meta.seconds) === undefined ? undefined : meta.seconds * 1000,
-          summary: h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+          summary: said
+            ? h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: `${headline} · ${said}` },
+              ...joined([plural(num(meta.items) ?? 0, 'item'), h('span', { className: 'vsr-s1__verdict', 'data-system-one-part': 'verdict' }, said)]))
+            : h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
           model: meta.model,
           body: h(ToolBody, { meta, fresh, cwd, openFile, sessionId }),
         })

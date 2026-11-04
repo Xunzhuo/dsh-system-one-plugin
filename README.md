@@ -20,7 +20,7 @@ and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ```bash
 npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add @vllm-sr/dsh@0.6.1
+dsh plugin --profile web add @vllm-sr/dsh@0.6.2
 dsh web
 ```
 
@@ -40,7 +40,7 @@ in the app and System One keeps working beside it.
 Headless:
 
 ```bash
-dsh plugin --profile headless add @vllm-sr/dsh@0.6.1
+dsh plugin --profile headless add @vllm-sr/dsh@0.6.2
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
@@ -177,9 +177,10 @@ a second up):
   struck through, a command's dangerous part, unsupported claims of the answer underlined, and masked personal data as
   label chips in a **Privacy** card.
 
-Routine checks (an allowed call, a clean result) are one line and fold with the turn's work. Cards stay visible when
-the work folds, so a finished turn still shows what System One decided. Parallel calls in one step share one line or
-card. A decision that takes longer than a moment shows as **Deciding**, with the Web UI's own shimmer across its line,
+Routine checks (an allowed call, a clean result) are one line. When a turn ends, DeepSeek Harness folds its work
+("Completed in …", "Ran commands"), and System One stays outside the fold: each line and card keeps its place, and each
+`system_one` or `system_one_screen` call keeps one line (**System One**, the latency, the verdict) that opens its card
+again. A reloaded session shows the same. Parallel calls in one step share one line or card. A decision that takes longer than a moment shows as **Deciding**, with the Web UI's own shimmer across its line,
 until its answer settles in its place; every card fades in once, the first time it appears (no motion with reduced
 motion). Every card keeps its blue frame: red marks only what System One stopped, inside it (a Dangerous level, the
 dangerous part of a command, a blocked call, removed text, your rejection), and amber what it asks (your approval, or
@@ -196,7 +197,7 @@ attributes that say what it shows:
 
 | Attribute | Values |
 | --- | --- |
-| `data-system-one` | `card`, `compact` (one line), `tool` (the `system_one` row), `screen` (the `system_one_screen` row) or `notice` (the free-key line) |
+| `data-system-one` | `card`, `compact` (one line), `tool` (the `system_one` row, and the line a finished turn keeps for each call), `screen` (the same for `system_one_screen`) or `notice` (the free-key line) |
 | `data-system-one-reflex` | `triage`, `guard`, `shield`, `privacy`, `done`, `tool`, `screen` or `key` |
 | `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; privacy `masked` or `clean`; done-check `stop` or `continue`; tool and screen `running` or `done`; key `created` or `failed`; `deciding` while System One has not answered yet, `cancelled` when the turn stopped first; `error` when System One did not answer |
 | `data-system-one-outcome` | guard, once you answer its approval: `allowed`, `rejected`, `cancelled` or `failed` |

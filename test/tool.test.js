@@ -427,6 +427,9 @@ test('a label set written as a choice is asked as a span question, and a type be
   const typed = parseQuestions({ type: 'span', ERROR: { criteria: { ERROR: 'an error code' } }, team: { type: 'choice', instructions: 'Team?', criteria: { a: 'A', b: 'B' } } })
   assert.deepEqual([typed.ERROR.type, typed.team.type, typed.type], ['span', 'choice', undefined])
   assert.throws(() => parseQuestions({ type: 'span' }), /questions must be an object of question id/)
+
+  // a choice without options, as System Two wrote one in a live run, is refused before any request
+  assert.throws(() => parseQuestions({ page: { type: 'choice', instructions: 'Which page is this? Answer with the page name.' } }), /question "page": a choice question needs criteria naming two or more options/)
 })
 
 test('grounded items share requests only as far as the token estimate allows, and an item too heavy to read is refused', async t => {

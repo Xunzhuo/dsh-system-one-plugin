@@ -20,6 +20,8 @@
         models:
           - id: vllm-sr/auto
             name: vllm-sr/auto
+            # the router sends a request that carries an image to its vision decision, tool calls and all
+            input: [text, image]
             contextWindow: 131072
             maxTokens: 32768
 

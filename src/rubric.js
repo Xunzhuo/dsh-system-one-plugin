@@ -99,6 +99,10 @@ export function parseQuestions(value) {
     if (question.type === undefined) question.type = impliedType(question.criteria)
     if (labelSet(question)) question.type = 'span'
     if (![...DECISION_TYPES, 'span'].includes(question.type)) throw new Error(`question "${id}" needs type choice, noul, score, box or span, a preset or a signal`)
+    // the Decision API refuses a choice without options as malformed, item by item
+    if (question.type === 'choice' && labelsOf(question.criteria).length < 2) {
+      throw new Error(`question "${id}": a choice question needs criteria naming two or more options, as {"billing": "invoices, refunds", "engineering": "bugs, errors"}`)
+    }
     if (question.type === 'span') {
       if (labelsOf(question.criteria).length === 0) throw new Error(`question "${id}": a span question needs criteria naming its labels, as {"LABEL": "what it marks"} or ["LABEL"]`)
       checkThreshold(id, question.threshold)

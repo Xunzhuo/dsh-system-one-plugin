@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.2 (2026-11-04)
+
+- **System One stays visible when a turn ends.** DeepSeek Harness folds a finished turn's tool calls into "Completed
+  in …" and "Ran commands", and 0.6.1's routine lines and its `system_one` and `system_one_screen` rows folded away
+  with them. Every System One line and card now stays outside the fold, and each call of either tool keeps one line in
+  the turn (**System One**, the latency, the verdict) that opens its card again, also after a reload. While the turn
+  runs, the call's own row shows the card as before. A batch's one line says what it found, its first question's
+  answers (`team: billing 61, engineering 58`), here and with `systemOneUi: compact`.
+- **Images through `vllm-sr/auto`**: the model now declares image input, so DeepSeek Harness reads a screenshot or a
+  chart for System Two instead of stopping with "model "vllm-sr/auto" does not declare image input". The router sends
+  every request that carries an image, tool calls included, to its vision decision.
+- **Privacy** leaves the machine's account in a home directory (`/home/dev`, `C:\Users\dev`) and a prompt (`dev@box`)
+  unmasked; 0.6.1 masked `pwd` output as a person. Someone else's home directory is still masked.
+- **The `system_one` and `system_one_screen` tools** refuse a choice question without options before any request, and
+  say how to write it, instead of returning "no answer" for it.
+
 ## 0.6.1 (2026-11-04)
 
 - **Privacy** leaves a file's owner and group unmasked when the span model marks them together, as `dev dev` in

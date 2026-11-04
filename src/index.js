@@ -170,6 +170,8 @@ function briefCall(exec) {
 
 // localhost, 127/8, 0.0.0.0, ::1, 10/8, 172.16/12, 192.168/16 and 169.254/16, with or without a port
 const LOCAL_ADDRESS = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1?|\[::1?\]|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|169\.254(?:\.\d{1,3}){2})(?::\d+)?$/i
+// the folders a home directory's path goes through before the account's name
+const HOME_WORDS = new Set(['home', 'users', 'mnt', 'root'])
 
 function accountName() {
   try {
@@ -385,6 +387,13 @@ export function apply(ctx, config) {
       state.asked.delete(exec.callId)
       record(exec.agent.session, { ...asked, outcome: approvalOutcome(result) })
     }
+    // a system_one call's own row folds away with the turn's tool calls; this record keeps its line in the turn
+    if (OWN_TOOLS.has(exec.name)) {
+      record(exec.agent.session, {
+        reflex: exec.name === SCREEN_TOOL ? 'screen' : 'tool', turn: state.turn, step: state.step, callId: exec.callId, tool: exec.name, session: state.id,
+        ...(ok ? { meta: result.meta } : { error: subject(result.error?.message ?? textOf(result.content), 300) }),
+      })
+    }
     state.calls.push({ tool: exec.name, brief: briefCall(exec), ok })
     // what the turn read, as System Two got it: the done-check's evidence for the answer
     state.reads.push({ tool: exec.name, brief: briefCall(exec), text: clip(textOf(result.content), 6000) })
@@ -567,10 +576,15 @@ export function apply(ctx, config) {
   // Not the personal data privacy keeps from System Two: the machine's own account and host names (they fill file
   // listings and paths), loopback and private network addresses, and what the user wrote in the request itself.
   const machine = new Set([accountName(), hostname()].filter(Boolean).map(name => name.toLowerCase()))
+  // the machine's names as they are marked: a file's owner and group ("dev dev"), a home directory (/home/dev,
+  // C:\Users\dev), a prompt (dev@box)
+  const ownName = value => {
+    const words = value.toLowerCase().split(/[\s/\\@:~]+/).filter(Boolean)
+    return words.some(word => machine.has(word)) && words.every(word => machine.has(word) || HOME_WORDS.has(word) || /^[a-z]$/.test(word))
+  }
   const personal = (span, told) => {
     const value = span.text.trim()
-    // a file's owner and group are often marked together, as "dev dev"
-    if (!sensitive.has(span.label) || value.split(/\s+/).every(name => machine.has(name.toLowerCase()))) return false
+    if (!sensitive.has(span.label) || ownName(value)) return false
     if (span.label === 'IP_ADDRESS' && LOCAL_ADDRESS.test(value.replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, ''))) return false
     return !(value.length >= 3 && told?.includes(value))
   }
