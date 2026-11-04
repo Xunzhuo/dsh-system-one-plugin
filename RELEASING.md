@@ -43,3 +43,8 @@ The workflow runs the tests, stops unless the tag is `v` followed by `package.js
 runs `npm publish --access public --provenance`. A version that is already on npm is skipped, so the tag of a version
 published by hand runs green. To run it again for an existing tag, start **Publish** from the Actions tab with the tag
 under "Use workflow from" (`gh workflow run publish.yml --ref v0.3.1`); a run on a branch publishes nothing.
+
+3. Once `npm view @vllm-sr/dsh version` shows the new version, name it on System Duo's site too, and release the site.
+   The DeepSeek Harness lines of [app.vllm-sr.ai](https://app.vllm-sr.ai)'s "Ways in" and of its
+   [docs](https://app.vllm-sr.ai/docs#deepseek-harness) (web and headless) name the version, as README.md's do, and
+   install the old one until they change.
