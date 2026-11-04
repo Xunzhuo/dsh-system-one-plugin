@@ -34,8 +34,9 @@ window.__ModuleLoader__.load({
       const KINDS = { code: 'Code', data: 'Data', research: 'Research', writing: 'Writing', ops: 'Ops', chat: 'Chat' }
       const EFFORT = ['Trivial', 'Small', 'Medium', 'Large']
       const RISK = ['Safe', 'Normal', 'Dangerous', 'Critical']
-      const HUES = ['#2F9BFF', '#14C4E8', '#7357F6', '#F2A100', '#A95BF2', '#1F9D5B', '#4A6CFF', '#EF5630']
-      const RAMP = ['#14C4E8', '#2F9BFF', '#7357F6', '#A95BF2', '#F2A100', '#EF5630', '#D9441F']
+      // the vLLM logo's blue (#30A2FF) leads; its gold and cool neighbours tell the other options apart
+      const HUES = ['#30A2FF', '#1559B5', '#7CCBFF', '#6E7CF5', '#FDB515', '#2BB3A3', '#A9C6FF', '#0B3A75']
+      const RAMP = ['#C5E5FF', '#97D0FF', '#63B8FF', '#30A2FF', '#1E85E3', '#1667C4', '#0F4C94']
       const SEVERITY = { muted: 0, ok: 1, info: 2, warn: 3, bad: 4 }
 
       const GUARD = {
@@ -90,6 +91,8 @@ window.__ModuleLoader__.load({
         const step = Number.isSafeInteger(data.step) ? data.step : undefined
         if (data.reflex === 'triage' && turn !== undefined) return `t${turn}:triage`
         if (['guard', 'shield', 'privacy'].includes(data.reflex) && turn !== undefined && step !== undefined) return `t${turn}:s${step}:${data.reflex}`
+        // a done-check that was still deciding and its answer share one element
+        if (data.reflex === 'done' && typeof data.decision === 'string') return `d:${data.decision}`
         return `r${seq}`
       }
 
@@ -106,12 +109,25 @@ window.__ModuleLoader__.load({
             return { ...base, rows }
           }
         }
-        return { ...base, rows: [...base.rows, { ...data, seq: event.seq, time: event.time }] }
+        const row = { ...data, seq: event.seq, time: event.time }
+        // a decision's answer takes the place of the row that showed it deciding
+        if (typeof data.decision === 'string') {
+          const at = base.rows.findIndex(other => other.decision === data.decision)
+          if (at >= 0) {
+            const rows = base.rows.slice()
+            rows[at] = row
+            return { ...base, rows }
+          }
+        }
+        return { ...base, rows: [...base.rows, row] }
       }
 
       // Triage and done-check frame the turn and stay visible when it folds; so does a guard or shield card that
       // stopped something. A routine one sits with the work it checked and folds with it.
       function standsOut(state) {
+        // a decision still deciding, or stopped, is one line until its answer comes
+        if (state.rows.every(row => row.pending || row.verdict === 'cancelled')) return false
+        if (state.reflex === 'privacy') return state.rows.some(row => row.verdict === 'masked' || row.error)
         if (state.reflex !== 'guard' && state.reflex !== 'shield') return true
         return state.rows.some(row => SEVERITY[viewOf(state.reflex, row).tone] >= SEVERITY.warn)
       }
@@ -228,6 +244,9 @@ window.__ModuleLoader__.load({
 
       function privacyView(row) {
         if (row.error) return errorView(row, { text: 'so the result went to System Two unmasked', tone: 'warn' })
+        if (row.verdict === 'clean') {
+          return { verdict: 'clean', label: 'Nothing to mask', short: 'nothing to mask', tone: 'ok', subject: row.call ? { tool: row.tool, text: row.call } : undefined, facts: [{ id: 'masked', label: 'Masked', value: '0' }] }
+        }
         const masked = num(row.masked) ?? 0
         const labels = row.labels && typeof row.labels === 'object' ? Object.entries(row.labels).filter(([, n]) => num(n)) : []
         return {
@@ -265,7 +284,18 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // what a decision that has no answer yet says, and one whose turn stopped before it was answered
+      const WAITING = {
+        guard: 'reviewing the call', shield: 'screening the result', privacy: 'looking for personal data', done: 'checking the work', triage: 'reading the request',
+      }
+      function waitingView(reflex, row) {
+        const subject = row.call ? { tool: row.tool, text: row.call } : undefined
+        if (row.pending) return { verdict: 'deciding', label: 'Deciding', short: 'deciding', tone: 'info', pending: true, detail: WAITING[reflex] ?? 'thinking', subject, facts: [] }
+        return { verdict: 'cancelled', label: 'Stopped', short: 'stopped', tone: 'muted', detail: 'the turn stopped before System One answered', subject, facts: [] }
+      }
+
       function viewOf(reflex, row) {
+        if (row.pending || row.verdict === 'cancelled') return waitingView(reflex, row)
         switch (reflex) {
           case 'triage': return triageView(row)
           case 'guard': return guardView(row)
@@ -300,6 +330,7 @@ window.__ModuleLoader__.load({
       function compactLine(view) {
         const label = view.outcome ? `${view.label} → ${view.outcome.label}` : view.label
         const rest = []
+        if (view.detail) rest.push(view.detail)
         if (view.subject?.text) rest.push(`${view.subject.tool ?? ''} ${view.subject.text}`.trim())
         const lead = view.facts.find(fact => ['risk', 'injection', 'complete', 'effort', 'masked'].includes(fact.id))
         if (lead) rest.push(`${lead.label.toLowerCase()} ${lead.value}`)
@@ -395,10 +426,11 @@ window.__ModuleLoader__.load({
           h('b', null, value))
       }
 
-      function Row({ row, view, single }) {
+      function Row({ row, view, single, index = 0 }) {
         const fresh = useFresh(`row:${idOf(row)}`, row.time)
         return h('div', {
           className: cx('vsr-s1__row', fresh && 'vsr-s1__row--fresh'),
+          style: fresh ? { '--vsr-s1-i': Math.min(index, 6) } : undefined,
           'data-system-one-decision': view.verdict,
           'data-system-one-outcome': view.outcomeKey,
           'data-system-one-call': row.callId,
@@ -424,7 +456,7 @@ window.__ModuleLoader__.load({
         const hidden = all ? 0 : Math.max(0, rows.length - ROWS_SHOWN)
         return h('div', { className: 'vsr-s1__rows', 'data-system-one-part': 'rows' },
           hidden > 0 ? h('button', { type: 'button', className: 'vsr-s1__more', 'data-system-one-part': 'more', onClick: () => setAll(true) }, `Show ${plural(hidden, `earlier ${reflex === 'guard' ? 'call' : 'result'}`)}`) : null,
-          rows.slice(hidden).map((row, index) => h(Row, { key: idOf(row), row, view: views[hidden + index], single: rows.length === 1 })))
+          rows.slice(hidden).map((row, index) => h(Row, { key: idOf(row), row, view: views[hidden + index], single: rows.length === 1, index })))
       }
 
       const whole = value => (Number.isSafeInteger(value) ? String(value) : undefined)
@@ -489,20 +521,23 @@ window.__ModuleLoader__.load({
         const reflex = REFLEX[state.reflex] ?? state.reflex
         const line = views.length === 1 ? compactLine(views[0]) : { label: headlineOf(state.reflex, views), tone: undefined, rest: '' }
         const said = line.rest ? `${line.label} · ${line.rest}` : line.label
+        const deciding = views.some(view => view.pending)
         return h('div', {
-          className: cx('vsr-s1', 'vsr-s1--compact', `vsr-s1--${worst.tone}`, open && 'vsr-s1--open', fresh && 'vsr-s1--fresh'),
+          className: cx('vsr-s1', 'vsr-s1--compact', `vsr-s1--${worst.tone}`, open && 'vsr-s1--open', fresh && 'vsr-s1--fresh', deciding && 'vsr-s1--deciding'),
           role: 'group',
           'aria-label': `System One ${reflex}: ${said}`,
-          ...attributes('compact', state, worst),
+          'aria-busy': deciding || undefined,
+          ...attributes('compact', state, deciding ? views.find(view => view.pending) : worst),
         },
         h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
-          h(Badge, { key: idOf(last), id: idOf(last), ms: last.ms, time: last.time }),
+          h(Badge, { key: idOf(last), id: idOf(last), ms: deciding ? undefined : last.ms, time: last.time }),
           h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, reflex),
-          h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: said },
+          h('span', { className: cx('vsr-s1__summary', deciding && 'vsr-s1__shimmer'), 'data-system-one-part': 'summary', title: said },
             h('span', { className: cx('vsr-s1__verdict', line.tone && `vsr-s1__verdict--${line.tone}`), 'data-system-one-part': 'verdict' }, line.label),
             line.rest ? ` · ${line.rest}` : null),
-          open ? h(Model, { model: last.model, also: state.rows.find(row => row.spanModel)?.spanModel }) : null,
+          open && !deciding ? h(Model, { model: last.model, also: state.rows.find(row => row.spanModel)?.spanModel }) : null,
           h(Chevron)),
+        deciding ? h('span', { className: 'vsr-s1__progress', 'data-system-one-part': 'progress', 'aria-hidden': true }) : null,
         open ? h(Rows, { reflex: state.reflex, rows: state.rows, views }) : null)
       }
 
@@ -603,7 +638,7 @@ window.__ModuleLoader__.load({
           }
         }
         if (summary?.type === 'noul') {
-          return { parts: [{ label: 'yes', n: summary.yes ?? 0, color: '#EF5630' }, { label: 'no', n: summary.no ?? 0, color: 'var(--vsr-s1-track)' }] }
+          return { parts: [{ label: 'yes', n: summary.yes ?? 0, color: '#30A2FF' }, { label: 'no', n: summary.no ?? 0, color: 'var(--vsr-s1-track)' }] }
         }
         if (summary?.type === 'score') {
           const levels = Object.entries(summary.levels ?? {})
@@ -649,11 +684,12 @@ window.__ModuleLoader__.load({
 
         if (phase !== 'result') {
           const line = phase === 'preparing' ? 'Preparing a batch' : `Answering ${plural(asked, 'question')}${source ? ` over ${source}` : ''}`
-          return h('div', { className: 'vsr-s1 vsr-s1--compact vsr-s1--running', 'data-system-one': 'tool', ...common, 'data-system-one-verdict': 'running', 'data-system-one-tone': 'info' },
+          return h('div', { className: 'vsr-s1 vsr-s1--compact vsr-s1--running vsr-s1--deciding', 'aria-busy': true, 'data-system-one': 'tool', ...common, 'data-system-one-verdict': 'running', 'data-system-one-tone': 'info' },
             h('div', { className: 'vsr-s1__chip vsr-s1__chip--static' },
               h(Badge, { id: `${callId}:running`, time: Date.now() }),
               h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
-              h('span', { className: 'vsr-s1__summary vsr-s1__shimmer', 'data-system-one-part': 'summary' }, line)))
+              h('span', { className: 'vsr-s1__summary vsr-s1__shimmer', 'data-system-one-part': 'summary' }, line)),
+            h('span', { className: 'vsr-s1__progress', 'data-system-one-part': 'progress', 'aria-hidden': true }))
         }
 
         if (block?.isError || !meta || ui === 'off') {
@@ -706,31 +742,33 @@ window.__ModuleLoader__.load({
         return h(Contained, null, h(ToolRow, props))
       }
 
-      // ---- styles: the Web UI's theme tokens, with System One's ember from the launch film ----
+      // ---- styles: the Web UI's theme tokens, with the blue of the vLLM logo (#30A2FF) for System One ----
 
       const CSS = `
-.vsr-s1{--vsr-s1-ember:#EF5630;--vsr-s1-ember-deep:#D9441F;--vsr-s1-gold:#F5B82E;--vsr-s1-ok:var(--dsw-alias-state-success-primary,#1F9D5B);--vsr-s1-warn:var(--dsw-alias-state-warn-primary,#E8A100);--vsr-s1-bad:var(--dsw-alias-state-error-primary,#E5484D);--vsr-s1-info:var(--dsw-alias-brand-primary,#2F7BF6);--vsr-s1-text:var(--dsw-alias-label-primary,#1F2329);--vsr-s1-text-2:var(--dsw-alias-label-secondary,#545961);--vsr-s1-text-3:var(--dsw-alias-label-tertiary,#8A8F98);--vsr-s1-line:var(--dsw-alias-border-l2,rgba(127,127,127,.22));--vsr-s1-track:color-mix(in srgb,var(--vsr-s1-text-3) 28%,transparent);--vsr-s1-mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;position:relative;box-sizing:border-box;width:100%;margin:6px 0;color:var(--vsr-s1-text);font-size:13.5px;line-height:1.45;text-align:left}
+.vsr-s1{--vsr-s1-blue:#30A2FF;--vsr-s1-blue-soft:#7CC4FF;--vsr-s1-blue-deep:#1E7FE0;--vsr-s1-ink:#166BC9;--vsr-s1-badge-a:#2290F0;--vsr-s1-badge-b:#135CB8;--vsr-s1-tint:6%;--vsr-s1-tint-2:1.5%;--vsr-s1-edge:24%;--vsr-s1-lift:rgba(16,42,84,.05);--vsr-s1-ok:var(--dsw-alias-state-success-primary,#1F9D5B);--vsr-s1-warn:var(--dsw-alias-state-warn-primary,#E8A100);--vsr-s1-bad:var(--dsw-alias-state-error-primary,#E5484D);--vsr-s1-text:var(--dsw-alias-label-primary,#1F2329);--vsr-s1-text-2:var(--dsw-alias-label-secondary,#545961);--vsr-s1-text-3:var(--dsw-alias-label-tertiary,#8A8F98);--vsr-s1-line:var(--dsw-alias-border-l2,rgba(127,127,127,.22));--vsr-s1-track:color-mix(in srgb,var(--vsr-s1-text-3) 26%,transparent);--vsr-s1-mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;--vsr-s1-ease:cubic-bezier(.22,1,.36,1);position:relative;box-sizing:border-box;width:100%;margin:6px 0;color:var(--vsr-s1-text);font-size:13.5px;line-height:1.45;text-align:left}
+body[data-ds-dark-theme] .vsr-s1{--vsr-s1-blue-soft:#4DB0FF;--vsr-s1-ink:#6BBEFF;--vsr-s1-badge-a:#2A98F5;--vsr-s1-badge-b:#1667C9;--vsr-s1-tint:9%;--vsr-s1-tint-2:3%;--vsr-s1-edge:32%;--vsr-s1-lift:rgba(0,0,0,.28)}
 .vsr-s1 *{box-sizing:border-box}
-.vsr-s1--card{padding:11px 14px 12px 17px;border:1px solid color-mix(in srgb,var(--vsr-s1-ember) 30%,var(--vsr-s1-line));border-radius:12px;background:linear-gradient(180deg,color-mix(in srgb,var(--vsr-s1-ember) 7%,transparent),color-mix(in srgb,var(--vsr-s1-ember) 2.5%,transparent))}
-.vsr-s1--card.vsr-s1--bad{border-color:color-mix(in srgb,var(--vsr-s1-bad) 50%,var(--vsr-s1-line));background:linear-gradient(180deg,color-mix(in srgb,var(--vsr-s1-bad) 9%,transparent),color-mix(in srgb,var(--vsr-s1-bad) 3%,transparent))}
-.vsr-s1--card.vsr-s1--warn{border-color:color-mix(in srgb,var(--vsr-s1-warn) 50%,var(--vsr-s1-line));background:linear-gradient(180deg,color-mix(in srgb,var(--vsr-s1-warn) 9%,transparent),color-mix(in srgb,var(--vsr-s1-warn) 3%,transparent))}
+.vsr-s1--card{--vsr-s1-tone:var(--vsr-s1-blue);padding:11px 14px 12px 17px;border:1px solid color-mix(in srgb,var(--vsr-s1-tone) var(--vsr-s1-edge),var(--vsr-s1-line));border-radius:12px;background:linear-gradient(180deg,color-mix(in srgb,var(--vsr-s1-tone) var(--vsr-s1-tint),transparent),color-mix(in srgb,var(--vsr-s1-tone) var(--vsr-s1-tint-2),transparent));box-shadow:0 1px 2px var(--vsr-s1-lift),0 10px 24px -16px color-mix(in srgb,var(--vsr-s1-tone) 55%,transparent)}
+.vsr-s1--card.vsr-s1--bad{--vsr-s1-tone:var(--vsr-s1-bad);--vsr-s1-edge:44%}
+.vsr-s1--card.vsr-s1--warn{--vsr-s1-tone:var(--vsr-s1-warn);--vsr-s1-edge:46%}
 .vsr-s1__sheen{position:absolute;inset:0;border-radius:inherit;overflow:hidden;pointer-events:none}
-.vsr-s1__sheen::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--vsr-s1-ember),var(--vsr-s1-gold))}
+.vsr-s1__sheen::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--vsr-s1-blue-soft),var(--vsr-s1-blue) 45%,var(--vsr-s1-blue-deep));transform-origin:top center}
 .vsr-s1--bad>.vsr-s1__sheen::before{background:var(--vsr-s1-bad)}
 .vsr-s1--warn>.vsr-s1__sheen::before{background:var(--vsr-s1-warn)}
 .vsr-s1__head{position:relative;display:flex;align-items:center;gap:9px;min-width:0}
-.vsr-s1__badge{position:relative;display:inline-flex;flex:none;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border-radius:999px;color:#fff;font-size:12px;font-weight:650;letter-spacing:-.005em;white-space:nowrap;background:linear-gradient(160deg,var(--vsr-s1-ember) 0%,var(--vsr-s1-ember-deep) 100%);box-shadow:0 1px 2px rgba(217,68,31,.28),inset 0 1px 0 rgba(255,255,255,.35)}
-.vsr-s1__dot{flex:none;width:6px;height:6px;border-radius:50%;background:#fff;box-shadow:0 0 6px #fff}
-.vsr-s1__ms{padding-left:7px;border-left:1px solid rgba(255,255,255,.5);font-weight:750;font-variant-numeric:tabular-nums}
+.vsr-s1__badge{position:relative;display:inline-flex;flex:none;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border-radius:999px;color:#fff;font-size:12px;font-weight:650;letter-spacing:-.005em;white-space:nowrap;background:linear-gradient(135deg,var(--vsr-s1-badge-a),var(--vsr-s1-badge-b));box-shadow:0 1px 2px color-mix(in srgb,var(--vsr-s1-badge-b) 35%,transparent),inset 0 1px 0 rgba(255,255,255,.26),inset 0 0 0 .5px rgba(255,255,255,.14)}
+.vsr-s1__dot{flex:none;width:6px;height:6px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.2)}
+.vsr-s1__ms{padding-left:7px;border-left:1px solid rgba(255,255,255,.42);font-weight:750;font-variant-numeric:tabular-nums}
 .vsr-s1__reflex{flex:none;font-weight:650;color:var(--vsr-s1-text);white-space:nowrap}
 .vsr-s1__summary{flex:1;min-width:0;overflow:hidden;color:var(--vsr-s1-text-2);white-space:nowrap;text-overflow:ellipsis}
 .vsr-s1__summary--bad{color:var(--vsr-s1-bad)}
 .vsr-s1__verdict{font-weight:600;color:var(--vsr-s1-text)}
-.vsr-s1__verdict--ok{color:var(--vsr-s1-ok)}.vsr-s1__verdict--warn{color:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__verdict--bad{color:var(--vsr-s1-bad)}.vsr-s1__verdict--info{color:var(--vsr-s1-ember-deep)}.vsr-s1__verdict--muted{color:var(--vsr-s1-text-3)}
+.vsr-s1__verdict--ok{color:var(--vsr-s1-ok)}.vsr-s1__verdict--warn{color:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__verdict--bad{color:var(--vsr-s1-bad)}.vsr-s1__verdict--info{color:var(--vsr-s1-ink)}.vsr-s1__verdict--muted{color:var(--vsr-s1-text-3)}
 .vsr-s1__model{flex:none;color:var(--vsr-s1-text-2);font-size:12px;font-weight:700;letter-spacing:-.005em;white-space:nowrap}
 .vsr-s1--notice{display:flex;align-items:center;gap:9px;min-width:0;margin:4px 0;padding:3px 0}
 .vsr-s1--notice .vsr-s1__summary{white-space:normal}
-.vsr-s1__duo{position:relative;display:inline-flex;flex:none;align-items:center;gap:5px;height:22px;padding:0 9px 0 8px;border-radius:999px;color:#fff;font-size:12px;font-weight:650;white-space:nowrap;background:linear-gradient(110deg,var(--vsr-s1-ember) 0%,#B04FD0 58%,#2F7BF6 100%);box-shadow:0 1px 2px rgba(90,60,170,.25),inset 0 1px 0 rgba(255,255,255,.32)}
+.vsr-s1__duo{position:relative;display:inline-flex;flex:none;align-items:center;gap:5px;height:22px;padding:0 9px 0 8px;border-radius:999px;color:#fff;font-size:12px;font-weight:650;white-space:nowrap;background:linear-gradient(110deg,var(--vsr-s1-badge-b) 0%,var(--vsr-s1-badge-a) 55%,var(--vsr-s1-blue) 100%);box-shadow:0 1px 2px color-mix(in srgb,var(--vsr-s1-badge-b) 35%,transparent),inset 0 1px 0 rgba(255,255,255,.26)}
+.vsr-s1__duo .vsr-s1__glyph{color:#FFD56B}
 .vsr-s1__glyph{flex:none}
 .vsr-s1__links{display:inline-flex;flex:none;gap:10px}
 a.vsr-s1__link{text-decoration:none}
@@ -738,10 +776,10 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__rows>*{grid-column:1/-1}
 .vsr-s1__row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-columns:subgrid;column-gap:12px;align-items:start}
 .vsr-s1__verdicts{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:92px}
-.vsr-s1__pill{--tone:var(--vsr-s1-text-3);display:inline-flex;align-items:center;gap:6px;padding:1px 8px 1px 7px;border-radius:6px;color:var(--tone);background:color-mix(in srgb,var(--tone) 13%,transparent);font-size:12px;font-weight:650;line-height:20px;white-space:nowrap}
+.vsr-s1__pill{--tone:var(--vsr-s1-text-3);display:inline-flex;align-items:center;gap:6px;padding:1px 8px 1px 7px;border-radius:6px;color:var(--tone);background:color-mix(in srgb,var(--tone) 12%,transparent);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--tone) 22%,transparent);font-size:12px;font-weight:650;line-height:20px;white-space:nowrap}
 .vsr-s1__pill::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:currentColor}
 .vsr-s1__pill--then::before{width:auto;height:auto;border-radius:0;background:none;content:"\\21B3"}
-.vsr-s1__pill--ok{--tone:var(--vsr-s1-ok)}.vsr-s1__pill--warn{--tone:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__pill--bad{--tone:var(--vsr-s1-bad)}.vsr-s1__pill--info{--tone:var(--vsr-s1-ember-deep)}.vsr-s1__pill--muted{--tone:var(--vsr-s1-text-3)}
+.vsr-s1__pill--ok{--tone:var(--vsr-s1-ok)}.vsr-s1__pill--warn{--tone:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__pill--bad{--tone:var(--vsr-s1-bad)}.vsr-s1__pill--info{--tone:var(--vsr-s1-ink)}.vsr-s1__pill--muted{--tone:var(--vsr-s1-text-3)}
 .vsr-s1__main{display:grid;gap:3px;min-width:0}
 .vsr-s1__subject{display:flex;align-items:baseline;gap:7px;min-width:0;line-height:22px}
 .vsr-s1__tool{flex:none;color:var(--vsr-s1-text-2);font-weight:600}
@@ -750,20 +788,20 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__fact{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .vsr-s1__fact b{color:var(--vsr-s1-text);font-weight:600;font-variant-numeric:tabular-nums}
 .vsr-s1__bar{position:relative;width:34px;height:4px;border-radius:2px;overflow:hidden;background:var(--vsr-s1-track)}
-.vsr-s1__bar>i{position:absolute;inset:0;border-radius:inherit;background:color-mix(in srgb,var(--vsr-s1-ember) 70%,var(--vsr-s1-text-3));transform-origin:left center;transform:scaleX(var(--p))}
+.vsr-s1__bar>i{position:absolute;inset:0;border-radius:inherit;background:var(--vsr-s1-blue);transform-origin:left center;transform:scaleX(var(--p))}
 .vsr-s1__bar--ok>i{background:var(--vsr-s1-ok)}.vsr-s1__bar--warn>i{background:var(--vsr-s1-warn)}.vsr-s1__bar--bad>i{background:var(--vsr-s1-bad)}
 .vsr-s1__note{color:var(--vsr-s1-text-2);font-size:12.5px}
 .vsr-s1__span{padding:0 3px;border-radius:4px;color:inherit;background:none;font:inherit}
-.vsr-s1__span--removed{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 15%,transparent);text-decoration:line-through;text-decoration-thickness:1.5px}
-.vsr-s1__span--dangerous{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 17%,transparent);box-shadow:inset 0 -2px 0 var(--vsr-s1-bad);font-weight:650}
-.vsr-s1__span--unsupported{background:color-mix(in srgb,var(--vsr-s1-warn) 24%,transparent);text-decoration:underline wavy color-mix(in srgb,var(--vsr-s1-warn) 85%,var(--vsr-s1-text));text-decoration-thickness:1.5px;text-underline-offset:3px}
+.vsr-s1__span--removed{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 14%,transparent);text-decoration:line-through;text-decoration-thickness:1.5px}
+.vsr-s1__span--dangerous{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 16%,transparent);box-shadow:inset 0 -2px 0 var(--vsr-s1-bad);font-weight:650}
+.vsr-s1__span--unsupported{background:color-mix(in srgb,var(--vsr-s1-warn) 22%,transparent);text-decoration:underline wavy color-mix(in srgb,var(--vsr-s1-warn) 85%,var(--vsr-s1-text));text-decoration-thickness:1.5px;text-underline-offset:3px}
 .vsr-s1__span--masked{display:inline-block;padding:0 6px;color:var(--dsw-alias-bg-layer-1,#fff);background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--vsr-s1-text) 80%,transparent) 0 6px,color-mix(in srgb,var(--vsr-s1-text) 66%,transparent) 6px 12px);font-family:var(--vsr-s1-mono);font-size:11px;font-weight:650;letter-spacing:.02em;line-height:17px}
 .vsr-s1__excerpts{display:grid;gap:5px;margin:3px 0 1px}
-.vsr-s1__excerpt{padding:6px 9px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-ember) 50%,transparent);border-radius:0 6px 6px 0;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-text-3) 9%,transparent);font-family:var(--vsr-s1-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.vsr-s1__excerpt{padding:6px 9px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-blue) 50%,transparent);border-radius:0 6px 6px 0;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-text-3) 8%,transparent);font-family:var(--vsr-s1-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
 .vsr-s1--bad .vsr-s1__excerpt{border-left-color:color-mix(in srgb,var(--vsr-s1-bad) 55%,transparent)}
 .vsr-s1--warn .vsr-s1__excerpt{border-left-color:color-mix(in srgb,var(--vsr-s1-warn) 60%,transparent)}
 .vsr-s1__labels{display:flex;flex-wrap:wrap;gap:4px 6px}
-.vsr-s1__label{display:inline-flex;align-items:center;gap:5px;padding:0 7px;border-radius:5px;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-text-3) 14%,transparent);font-family:var(--vsr-s1-mono);font-size:11.5px;line-height:20px}
+.vsr-s1__label{display:inline-flex;align-items:center;gap:5px;padding:0 7px;border-radius:5px;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-blue) 10%,transparent);font-family:var(--vsr-s1-mono);font-size:11.5px;line-height:20px}
 .vsr-s1__label b{color:var(--vsr-s1-text);font-weight:650}
 .vsr-s1__rowms{color:var(--vsr-s1-text-3);font-size:12px;line-height:22px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .vsr-s1__more,.vsr-s1__link{justify-self:start;padding:0;border:0;background:none;color:var(--dsw-alias-link,#2F7BF6);font:inherit;font-size:12.5px;cursor:pointer}
@@ -771,9 +809,10 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1--compact{margin:4px 0}
 .vsr-s1__chip{display:flex;align-items:center;gap:9px;width:100%;min-width:0;padding:3px 0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .vsr-s1__chip--static{cursor:default}
-.vsr-s1__chev{flex:none;color:var(--vsr-s1-text-3);transition:transform .16s ease}
+.vsr-s1__chev{flex:none;color:var(--vsr-s1-text-3);transition:transform .2s var(--vsr-s1-ease),color .2s ease}
+.vsr-s1__chip:hover .vsr-s1__chev{color:var(--vsr-s1-text-2)}
 .vsr-s1--open .vsr-s1__chev{transform:rotate(90deg)}
-.vsr-s1--compact>.vsr-s1__rows{margin:4px 0 8px 3px;padding-left:12px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-ember) 45%,transparent)}
+.vsr-s1--compact>.vsr-s1__rows{margin:4px 0 8px 3px;padding-left:12px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-blue) 40%,transparent)}
 .vsr-s1--plain .vsr-s1__reflex{color:var(--vsr-s1-text-2)}
 .vsr-s1__raw{margin:4px 0 8px;padding:8px 10px;max-height:320px;overflow:auto;border-radius:8px;background:color-mix(in srgb,var(--vsr-s1-text-3) 10%,transparent);font-family:var(--vsr-s1-mono);font-size:12px;white-space:pre-wrap}
 .vsr-s1__q{display:grid;grid-template-columns:minmax(80px,140px) minmax(0,1fr);column-gap:14px;align-items:start}
@@ -789,29 +828,30 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__swatch{flex:none;width:8px;height:8px;margin-right:6px;border-radius:2px}
 .vsr-s1__foot{color:var(--vsr-s1-text-3);font-size:12.5px}
 .vsr-s1__foot code{font-family:var(--vsr-s1-mono)}
-@keyframes vsr-s1-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
-@keyframes vsr-s1-glow{0%{box-shadow:0 0 0 0 rgba(239,86,48,0)}25%{box-shadow:0 0 0 5px rgba(239,86,48,.2),0 8px 28px rgba(239,86,48,.18)}100%{box-shadow:0 0 0 0 rgba(239,86,48,0),0 0 0 rgba(239,86,48,0)}}
-@keyframes vsr-s1-sweep{from{transform:translateX(-110%)}to{transform:translateX(110%)}}
-@keyframes vsr-s1-pop{0%{transform:scale(.55)}55%{transform:scale(1.09)}100%{transform:scale(1)}}
-@keyframes vsr-s1-ring{0%{opacity:.7;transform:scale(1)}100%{opacity:0;transform:scale(1.45,2.1)}}
-@keyframes vsr-s1-row{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+.vsr-s1__progress{position:relative;display:block;height:2px;margin:0 0 4px 1px;border-radius:2px;overflow:hidden;background:color-mix(in srgb,var(--vsr-s1-blue) 12%,transparent)}
+.vsr-s1__progress::before{content:"";position:absolute;top:0;bottom:0;left:0;width:36%;border-radius:inherit;background:linear-gradient(90deg,transparent,var(--vsr-s1-blue) 55%,transparent)}
+.vsr-s1--deciding .vsr-s1__badge::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(100deg,transparent 35%,rgba(255,255,255,.42) 50%,transparent 65%);background-size:220% 100%;pointer-events:none}
+.vsr-s1__shimmer{background:linear-gradient(90deg,var(--vsr-s1-text-2) 35%,var(--vsr-s1-blue) 50%,var(--vsr-s1-text-2) 65%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent}
+@keyframes vsr-s1-reveal{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes vsr-s1-rise{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@keyframes vsr-s1-draw{from{transform:scaleY(0)}to{transform:scaleY(1)}}
 @keyframes vsr-s1-fill{from{transform:scaleX(0)}}
 @keyframes vsr-s1-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
-@keyframes vsr-s1-blink{0%,100%{opacity:1}50%{opacity:.25}}
-@keyframes vsr-s1-shimmer{from{background-position:120% 0}to{background-position:-20% 0}}
-.vsr-s1--fresh{animation:vsr-s1-in .3s cubic-bezier(.2,.8,.2,1) both}
-.vsr-s1--card.vsr-s1--fresh{animation:vsr-s1-in .3s cubic-bezier(.2,.8,.2,1) both,vsr-s1-glow 1.3s ease-out .08s both}
-.vsr-s1--fresh>.vsr-s1__sheen::after{content:"";position:absolute;top:0;bottom:0;left:0;width:100%;background:linear-gradient(100deg,transparent 30%,rgba(255,170,110,.32) 50%,transparent 70%);animation:vsr-s1-sweep 1s cubic-bezier(.3,.7,.2,1) .1s both}
-.vsr-s1__badge--fresh{animation:vsr-s1-pop .55s cubic-bezier(.3,1.5,.5,1) both}
-.vsr-s1__badge--fresh::after{content:"";position:absolute;inset:-1px;border:2px solid var(--vsr-s1-ember);border-radius:inherit;pointer-events:none;animation:vsr-s1-ring .85s ease-out .06s both}
-.vsr-s1__row--fresh{animation:vsr-s1-row .34s cubic-bezier(.2,.8,.2,1) .06s both}
-.vsr-s1__row--fresh .vsr-s1__bar>i{animation:vsr-s1-fill .7s cubic-bezier(.2,.8,.2,1) .2s both}
-@keyframes vsr-s1-mark{0%{outline:2px solid color-mix(in srgb,var(--vsr-s1-ember) 70%,transparent);outline-offset:3px}100%{outline:2px solid transparent;outline-offset:0}}
-.vsr-s1__row--fresh .vsr-s1__span{animation:vsr-s1-mark .9s ease-out .35s both}
-.vsr-s1__stack--fresh>i{animation:vsr-s1-grow .6s cubic-bezier(.2,.8,.2,1) both}
-.vsr-s1--running .vsr-s1__dot{animation:vsr-s1-blink 1s ease-in-out infinite}
-.vsr-s1__shimmer{background:linear-gradient(90deg,var(--vsr-s1-text-2) 35%,var(--vsr-s1-ember) 50%,var(--vsr-s1-text-2) 65%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:vsr-s1-shimmer 1.6s linear infinite}
-@media (prefers-reduced-motion:reduce){.vsr-s1,.vsr-s1 *,.vsr-s1 *::before,.vsr-s1 *::after{animation:none!important;transition:none!important}.vsr-s1__shimmer{color:var(--vsr-s1-text-2)}}
+@keyframes vsr-s1-ink{from{background-color:transparent;box-shadow:none}}
+@keyframes vsr-s1-breathe{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes vsr-s1-shimmer{from{background-position:130% 0}to{background-position:-30% 0}}
+@keyframes vsr-s1-scan{from{transform:translateX(-100%)}to{transform:translateX(280%)}}
+.vsr-s1--fresh{animation:vsr-s1-reveal .22s var(--vsr-s1-ease) both}
+.vsr-s1--fresh>.vsr-s1__sheen::before{animation:vsr-s1-draw .42s var(--vsr-s1-ease) .06s both}
+.vsr-s1__row--fresh{animation:vsr-s1-rise .24s var(--vsr-s1-ease) both;animation-delay:calc(60ms + var(--vsr-s1-i,0) * 45ms)}
+.vsr-s1__row--fresh .vsr-s1__bar>i{animation:vsr-s1-fill .6s var(--vsr-s1-ease) .16s both}
+.vsr-s1__row--fresh .vsr-s1__span{animation:vsr-s1-ink .5s ease-out .26s both}
+.vsr-s1__stack--fresh>i{animation:vsr-s1-grow .6s var(--vsr-s1-ease) both}
+.vsr-s1--deciding .vsr-s1__dot{animation:vsr-s1-breathe 1.4s ease-in-out infinite}
+.vsr-s1--deciding .vsr-s1__badge::after{animation:vsr-s1-shimmer 1.8s linear infinite}
+.vsr-s1__progress::before{animation:vsr-s1-scan 1.6s cubic-bezier(.45,0,.55,1) infinite}
+.vsr-s1__shimmer{animation:vsr-s1-shimmer 2s linear infinite}
+@media (prefers-reduced-motion:reduce){.vsr-s1,.vsr-s1 *,.vsr-s1 *::before,.vsr-s1 *::after{animation:none!important;transition:none!important}.vsr-s1__shimmer{color:var(--vsr-s1-text-2);background:none}.vsr-s1--deciding .vsr-s1__badge::after{display:none}.vsr-s1__progress::before{width:100%;opacity:.45;background:var(--vsr-s1-blue)}}
 `
       if (typeof document !== 'undefined') {
         const tagId = `${PACKAGE}/system-one.css`

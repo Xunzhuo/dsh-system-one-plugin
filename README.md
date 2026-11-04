@@ -75,8 +75,8 @@ instead of whole passages:
 
 ## See it in the Web UI
 
-In `dsh web`, System One shows up in the conversation itself, where it acted, marked with an ember **System One**
-badge that carries the decision's latency:
+In `dsh web`, System One shows up in the conversation itself, where it acted, marked with a blue **System One** badge
+(the blue of the vLLM logo) that carries the decision's latency:
 
 - **Triage**: a card under your request with the kind of work, the effort, how unclear and how risky it is, and the
   brief System Two was given.
@@ -94,9 +94,9 @@ badge that carries the decision's latency:
 
 Routine checks (an allowed call, a clean result) are one line and fold with the turn's work. Cards stay visible when
 the work folds, so a finished turn still shows what System One decided. Parallel calls in one step share one line or
-card, and every decision pops in with a short animation the first time it appears (none with reduced motion). Each
-element shows the Decision API's own answer: the probabilities, the model (in bold, as `vllm-sr/d3-ultra`) and the
-measured latency.
+card. A decision that takes longer than a moment shows as **Deciding** until its answer takes its place, and every
+decision fades in once, the first time it appears (no motion with reduced motion). Each element shows the Decision
+API's own answer: the probabilities, the model (in bold, as `vllm-sr/d3-ultra`) and the measured latency.
 
 Set `systemOneUi` to `compact` for one line per decision, or to `off` to hide them.
 
@@ -109,18 +109,18 @@ attributes that say what it shows:
 | --- | --- |
 | `data-system-one` | `card`, `compact` (one line), `tool` (the `system_one` row) or `notice` (the free-key line) |
 | `data-system-one-reflex` | `triage`, `guard`, `shield`, `privacy`, `done`, `tool` or `key` |
-| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; privacy `masked`; done-check `stop` or `continue`; tool `running` or `done`; key `created` or `failed`; `error` when System One did not answer |
+| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; privacy `masked` or `clean`; done-check `stop` or `continue`; tool `running` or `done`; key `created` or `failed`; `deciding` while System One has not answered yet, `cancelled` when the turn stopped first; `error` when System One did not answer |
 | `data-system-one-outcome` | guard, once you answer its approval: `allowed`, `rejected`, `cancelled` or `failed` |
 | `data-system-one-why` | done-check: `complete`, `waiting`, `unfinished`, `unchecked` or `unsupported` |
-| `data-system-one-tone` | its colour: `ok` (green), `info` (ember), `warn` (amber), `bad` (red) or `muted` |
+| `data-system-one-tone` | its colour: `ok` (green), `info` (blue), `warn` (amber), `bad` (red) or `muted` |
 | `data-system-one-count` | how many decisions it holds (a batch: how many items) |
 | `data-system-one-turn`, `data-system-one-step` | where it acted (the step for guard and shield) |
 | `data-system-one-model` | the model that answered, as `vllm-sr/d3-ultra` |
 | `data-system-one-span-model`, `data-system-one-spans` | the span model that marked words, as `vllm-sr/vela3-turbo`, and how many |
 
-Inside a root, `data-system-one-part` marks `badge` (the ember **System One** pill), `latency`, `reflex`, `summary`,
+Inside a root, `data-system-one-part` marks `badge` (the blue **System One** pill), `latency`, `reflex`, `summary`,
 `model`, `head`, `toggle` (the button of a one-line element), `rows`, `verdict`, `outcome`, `subject`, `facts`,
-`note` and `more`, in the batch row also `stack`, `legend`, `failed`, `results` and `raw`, and in the free-key line
+`note`, `more` and `progress` (the line that moves while it decides), in the batch row also `stack`, `legend`, `failed`, `results` and `raw`, and in the free-key line
 `badge` (the **System Duo** pill), `summary` and `links`. Span answers add `excerpts`, each `excerpt`, every marked
 `span` (with `data-system-one-span-label` and `data-system-one-probability`) and, in a Privacy card, the `labels`. Each
 number is a `data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (triage), `risk`, `leaks` and `on-task`
@@ -137,7 +137,8 @@ number is a `data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (tri
 | A routine check (one line) | `[data-system-one="compact"][data-system-one-reflex="guard"]`, and `"shield"` |
 | Done-check | `[data-system-one-reflex="done"]` |
 | Batch row, finished | `[data-system-one="tool"][data-system-one-verdict="done"]` |
-| The ember badge, and its latency | `[data-system-one-part="badge"]`, `[data-system-one-part="latency"]` |
+| The blue badge, and its latency | `[data-system-one-part="badge"]`, `[data-system-one-part="latency"]` |
+| System One still deciding | `[data-system-one-verdict="deciding"]`, and its `[data-system-one-part="progress"]` |
 | "Dangerous", and "You rejected it" | `[data-system-one-fact="risk"]`, `[data-system-one-part="outcome"]` |
 | The reason | `[data-system-one-part="note"]` |
 | The model's name (bold) | `[data-system-one-part="model"]` |

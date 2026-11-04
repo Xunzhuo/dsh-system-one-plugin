@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.1 (2026-11-04)
+
+System One's elements in Chat take the blue of the vLLM logo and move more calmly.
+
+- **Colour**: the badge, the accent bar of a card, its edge and tint, the info pills and the probability bars are in
+  the vLLM logo's blue (`#30A2FF`) and its family, in light and dark themes, instead of ember. Red still marks what
+  System One blocked or removed, amber what it asks you or sends back, and green what it allowed. The batch charts
+  lead with the same blue; the **System Duo** pill is blue with a gold key.
+- **Motion**: an element fades in and rises 6 px once, in 220 ms on an ease-out curve; its accent bar draws in, its
+  rows follow 45 ms apart, and its bars and marked words fill in after them. No bounce, no ring, no glow, no sweep.
+  With reduced motion nothing moves.
+- **Deciding**: a decision that takes longer than 0.7 s is shown as a one-line **Deciding** element (what System One
+  is doing, a slow sheen on the badge and a thin moving line) until its answer takes its place in the same element;
+  so is a running `system_one` batch. A decision whose turn was stopped first says so. New selectors:
+  `data-system-one-verdict="deciding"` (and `cancelled`), `[data-system-one-part="progress"]`; the record of a
+  decision carries its `decision` id.
+- **Privacy** writes a one-line "Nothing to mask" record for a result it checked and found clean, as the shield does.
+
 ## 0.5.0 (2026-11-04)
 
 System One points at words: `vllm-sr/vela3-turbo` answers span questions, and four reflexes use them.

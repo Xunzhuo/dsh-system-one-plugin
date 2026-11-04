@@ -368,3 +368,55 @@ test('the system_one row draws the batch from its result, and its progress while
   assert.ok(textOf(failed).includes('Error: questions must be an object'))
   assert.deepEqual(attrs(root(failed), ['', 'verdict', 'tone']), { '': 'tool', verdict: 'error', tone: 'bad' })
 })
+
+test('a decision still deciding is one busy line, and its answer takes its place in the same element', () => {
+  const { exports } = load()
+  const pending = record({ reflex: 'guard', step: 3, callId: 'c1', tool: 'bash', call: 'git push --force origin main', decision: 'd1', pending: true, model: undefined, ms: undefined })
+  const [waiting] = assemble(exports.definition, [pending])
+  assert.equal(waiting.groupTree, undefined, 'it folds with the work until it has an answer')
+  const line = render(exports.SystemOneNode({ node: waiting }))
+  const [root] = findAll(line, props => props['data-system-one'])
+  assert.deepEqual(attrs(root, ['', 'reflex', 'verdict', 'tone']), { '': 'compact', reflex: 'guard', verdict: 'deciding', tone: 'info' })
+  assert.equal(root.props['aria-busy'], true)
+  assert.match(root.props.className, /vsr-s1--deciding/)
+  assert.ok(parts(line).includes('progress'))
+  assert.ok(!parts(line).includes('latency'), 'no latency before the answer')
+  assert.ok(textOf(line).includes('Deciding · reviewing the call · bash git push --force origin main'), textOf(line))
+
+  const [answered] = assemble(exports.definition, [pending, record({ reflex: 'guard', step: 3, callId: 'c1', tool: 'bash', call: 'git push --force origin main', decision: 'd1', answers: guardAnswers(2.1), verdict: 'ask', why: 'its risk is Dangerous' })])
+  assert.equal(answered.id, waiting.id)
+  assert.equal(answered.data.rows.length, 1)
+  assert.equal(answered.groupTree, 'turn')
+  const card = render(exports.SystemOneNode({ node: answered }))
+  assert.deepEqual(attrs(findAll(card, props => props['data-system-one'])[0], ['', 'verdict']), { '': 'card', verdict: 'ask' })
+  assert.ok(!parts(card).includes('progress'))
+
+  // a done-check groups by its decision, so its deciding line and its card are one element
+  const doneDeciding = record({ reflex: 'done', decision: 'd2', pending: true, model: undefined, ms: undefined })
+  const [doneNode] = assemble(exports.definition, [doneDeciding, record({ reflex: 'done', decision: 'd2', answers: { complete: { yes: 0.94 }, checked: { yes: 0.8 }, waiting: { yes: 0.03 } }, verdict: 'stop', why: 'complete' })])
+  assert.deepEqual([doneNode.id, doneNode.data.rows.length, doneNode.groupTree], ['d:d2', 1, 'turn'])
+  const [stopped] = assemble(exports.definition, [doneDeciding, record({ reflex: 'done', decision: 'd2', verdict: 'cancelled', model: undefined, ms: undefined })])
+  const stoppedLine = render(exports.SystemOneNode({ node: stopped }))
+  assert.deepEqual(attrs(findAll(stoppedLine, props => props['data-system-one'])[0], ['', 'verdict', 'tone']), { '': 'compact', verdict: 'cancelled', tone: 'muted' })
+  assert.ok(textOf(stoppedLine).includes('Stopped · the turn stopped before System One answered'), textOf(stoppedLine))
+
+  // privacy with nothing to mask is a routine line
+  const [clean] = assemble(exports.definition, [record({ reflex: 'privacy', callId: 'c3', tool: 'read', call: 'notes.md', model: 'vllm-sr/vela3-turbo', verdict: 'clean', masked: 0 })])
+  assert.equal(clean.groupTree, undefined)
+  assert.ok(textOf(render(exports.SystemOneNode({ node: clean }))).includes('Nothing to mask · read notes.md · masked 0'))
+})
+
+test('System One draws in the blue of the vLLM logo, keeps red and amber for what it stops, and moves calmly', () => {
+  const tags = []
+  const document = { head: { appendChild: tag => tags.push(tag) }, createElement: () => ({ dataset: {} }), querySelector: () => null }
+  load({ document })
+  const css = tags[0].textContent
+  assert.match(css, /--vsr-s1-blue:#30A2FF/)
+  assert.doesNotMatch(css, /#EF5630|ember/i)
+  assert.match(css, /\.vsr-s1--card\.vsr-s1--bad\{--vsr-s1-tone:var\(--vsr-s1-bad\)/)
+  assert.match(css, /\.vsr-s1--card\.vsr-s1--warn\{--vsr-s1-tone:var\(--vsr-s1-warn\)/)
+  const reveal = css.match(/\.vsr-s1--fresh\{animation:vsr-s1-reveal \.(\d+)s/)
+  assert.ok(reveal && Number(reveal[1]) >= 18 && Number(reveal[1]) <= 24, 'the reveal takes 180 to 240 ms')
+  assert.doesNotMatch(css, /scale\(1\.0\d\)|vsr-s1-pop|vsr-s1-ring|vsr-s1-glow/, 'no bounce, no ring, no glow pulse')
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none!important/)
+})

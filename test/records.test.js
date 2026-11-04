@@ -78,7 +78,7 @@ test('the system_one tool keeps its result facts for the Web UI row', async () =
 })
 
 // A decision service that answers each reflex's questions the way the real models would for these inputs.
-function fakeDecisions() {
+function fakeDecisions({ delayMs = 0 } = {}) {
   const asked = []
   const answer = (questions, state) => {
     asked.push(questions)
@@ -137,7 +137,8 @@ function fakeDecisions() {
         const of = (questions, state) => (vela3 ? (asked.push(questions), { answers: {}, spans: spansFor(questions, state) }) : { answers: answer(questions, state) })
         const states = Object.fromEntries(Object.entries(body.states ?? {}).map(([id, input]) => [id, of(input.questions, input.state)]))
         response.setHeader('x-request-id', 'req-1')
-        response.end(JSON.stringify({ model: body.model, ...of(body.questions, body.state), states }))
+        const answered = JSON.stringify({ model: body.model, ...of(body.questions, body.state), states })
+        setTimeout(() => response.end(answered), delayMs)
       })
     })
     server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, asked }))
@@ -237,6 +238,66 @@ test('each reflex writes one record per System One call, with the answers and wh
   assert.deepEqual([done.reflex, done.turn, done.step, done.verdict, done.why, done.steers, done.maxSteers, done.calls], ['done', 1, 2, 'stop', 'complete', 0, 2, 2])
   assert.deepEqual(done.answers.complete, { yes: 0.94 })
   assert.equal(agent.steered, undefined)
+})
+
+test('a slow decision shows as deciding first, and its answer takes that record\'s place', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const plugin = await import('../src/index.js')
+  const { server, url } = await fakeDecisions({ delayMs: plugin.DECIDING_MS + 300 })
+  const { ctx, config, handlers, agent, close } = harness(url)
+  t.after(() => {
+    close()
+    server.close()
+  })
+  plugin.apply(ctx, config)
+  const records = agent.session.records
+  const decision = await handlers.get('tools/pre-execute')({ name: 'bash', callId: 'c1', arguments: { command: 'git push --force origin main' }, agent }, async () => ({ kind: 'allow' }))
+  assert.equal(decision.kind, 'ask')
+  const [deciding, answered] = records.map(entry => entry.data)
+  assert.deepEqual([deciding.reflex, deciding.callId, deciding.call, deciding.pending, typeof deciding.decision], ['guard', 'c1', 'git push --force origin main', true, 'string'])
+  assert.equal(deciding.verdict, undefined)
+  assert.deepEqual([answered.verdict, answered.decision, answered.pending], ['ask', deciding.decision, undefined])
+
+  // a turn stopped while its done-check decides: the record that said deciding says so
+  const user = { role: 'user', content: [{ type: 'text', text: 'Push the fix.' }], source: { kind: 'user' } }
+  await handlers.get('agent/pre-step')({ agent, messages: [user], turn: 2, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+  const stop = new AbortController()
+  setTimeout(() => stop.abort(), plugin.DECIDING_MS + 150)
+  records.length = 0
+  await handlers.get('agent/turn-stopping')({ agent, turn: 2, signal: stop.signal })
+  const done = records.map(entry => entry.data).filter(data => data.reflex === 'done')
+  assert.deepEqual(done.map(data => [data.pending, data.verdict]), [[true, undefined], [undefined, 'cancelled']])
+  assert.equal(done[0].decision, done[1].decision)
+
+  // the rest of the chain fails after a slow screening: the record that said deciding says the step stopped
+  records.length = 0
+  const read = { name: 'read', callId: 'c2', arguments: { file_path: 'README.md' }, agent }
+  const failing = async () => {
+    throw new Error('downstream failed')
+  }
+  await assert.rejects(handlers.get('tools/post-execute')(read, { isError: false, content: [{ type: 'text', text: 'Install with pip install tool.\n'.repeat(8) }] }, failing), /downstream failed/)
+  assert.deepEqual(records.map(entry => [entry.data.reflex, entry.data.pending, entry.data.verdict]), [['shield', true, undefined], ['shield', undefined, 'cancelled']])
+})
+
+test('a decision that answers quickly writes only its answer', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const { server, url } = await fakeDecisions()
+  const plugin = await import('../src/index.js')
+  const { ctx, config, handlers, agent, close } = harness(url)
+  t.after(() => {
+    close()
+    server.close()
+  })
+  plugin.apply(ctx, config)
+  await handlers.get('tools/pre-execute')({ name: 'bash', callId: 'c1', arguments: { command: 'ls' }, agent }, async () => ({ kind: 'allow' }))
+  await new Promise(resolve => setTimeout(resolve, plugin.DECIDING_MS + 100))
+  assert.deepEqual(agent.session.records.map(entry => [entry.data.verdict, entry.data.pending, typeof entry.data.decision]), [['allow', undefined, 'string']])
+
+  // the shield's record waits for the rest of the chain, which is slow, and does not say deciding meanwhile
+  const read = { name: 'read', callId: 'c2', arguments: { file_path: 'README.md' }, agent }
+  const slow = () => new Promise(resolve => setTimeout(() => resolve({ kind: 'accept' }), plugin.DECIDING_MS + 100))
+  await handlers.get('tools/post-execute')(read, { isError: false, content: [{ type: 'text', text: 'Install with pip install tool.\n'.repeat(8) }] }, slow)
+  assert.deepEqual(agent.session.records.slice(1).map(entry => [entry.data.reflex, entry.data.verdict, entry.data.pending]), [['shield', 'clean', undefined]])
 })
 
 test('an unreachable decision service is recorded with the fallback the guard used', async t => {

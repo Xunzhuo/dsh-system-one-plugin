@@ -89,6 +89,8 @@ export const Config = z.object({
 const SOURCE = { kind: 'system-one' }
 // how long a step waits for the free keys of the first run before it goes on without them
 const KEYS_WAIT_MS = 20000
+// a decision that takes longer than this shows in Chat as deciding until its answer takes its place
+export const DECIDING_MS = 700
 
 const PROMPT = `# System One
 You are System Two: you plan, reason and act. Beside you runs System One, a fast decision model that answers typed questions with calibrated probabilities in a fraction of a second. It watches the loop:
@@ -174,6 +176,33 @@ export function apply(ctx, config) {
     onError: error => trace({ ev: 'record', error: clip(String(error?.message ?? error), 300) }),
   })
   const sessions = new Map()
+
+  // One decision's record. It is written once the answer is there, unless the answer takes longer than DECIDING_MS:
+  // then a deciding record goes first, and the answer, which carries the same decision id, takes its place in Chat.
+  let decisions = 0
+  function deciding(session, data) {
+    const decision = `${Date.now().toString(36)}.${(decisions++).toString(36)}`
+    let shown = false
+    const timer = setTimeout(() => {
+      shown = record(session, { ...data, decision, pending: true })
+    }, DECIDING_MS)
+    timer.unref?.()
+    return {
+      // the answer is in, and its record waits for the rest of the step
+      hold() {
+        clearTimeout(timer)
+      },
+      answer(final) {
+        clearTimeout(timer)
+        return record(session, { ...data, decision, ...final })
+      },
+      // no answer: a record that said deciding now says the turn stopped first
+      drop() {
+        clearTimeout(timer)
+        if (shown) record(session, { ...data, decision, verdict: 'cancelled' })
+      },
+    }
+  }
 
   // Whether spanModel answers span questions: `auto` asks the published models list, again every ten minutes.
   let spanCheck
@@ -375,15 +404,16 @@ export function apply(ctx, config) {
         `The agent now wants to run:\n${describeCall(exec)}`,
       ].join('\n\n')
       const base = { reflex: 'guard', turn: state?.turn, step: state?.step, callId: exec.callId, tool: exec.name, call: subject(relativeTo(briefCall(exec), workspace, homedir())) }
+      const decision = deciding(exec.agent.session, base)
       let response
       try {
         response = await client.ask({ model: config.model, questions: GUARD, inputs: [{ state: situation }], signal: exec.signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
       } catch (error) {
         trace({ ev: 's1', reflex: 'guard', session: state?.id, tool: exec.name, call: briefCall(exec), error: String(error?.message ?? error) })
         if (!exec.signal?.aborted) {
-          record(exec.agent.session, { ...base, verdict: config.guardOnError, error: subject(error?.message ?? error) })
+          decision.answer({ verdict: config.guardOnError, error: subject(error?.message ?? error) })
           if (config.guardOnError === 'ask') state?.asked.set(exec.callId, base)
-        }
+        } else decision.drop()
         if (config.guardOnError === 'deny') return { kind: 'deny', reason: `System One is unavailable (${error?.message ?? error}); the call was not run.` }
         if (config.guardOnError === 'ask') return { kind: 'ask', reason: 'System One is unavailable', displayReason: { en: 'System One is unavailable: allow this call?' } }
         return next()
@@ -425,8 +455,8 @@ export function apply(ctx, config) {
         ev: 's1', reflex: 'guard', session: state?.id, turn: state?.turn, tool: exec.name, call: briefCall(exec), model: response.model,
         ms: ms(response.ms), verdict, why, answers: answersOf(answers), ...(danger ? { spanModel: danger.model, danger: danger.spans } : {}),
       })
-      record(exec.agent.session, {
-        ...base, model: response.model, ms: ms(response.ms), requestId: response.requestId, answers: answersOf(answers), verdict, why,
+      decision.answer({
+        model: response.model, ms: ms(response.ms), requestId: response.requestId, answers: answersOf(answers), verdict, why,
         ...(danger ? { spanModel: danger.model, spanMs: ms(danger.ms), danger: danger.spans } : {}),
       })
       if (verdict === 'ask') state?.asked.set(exec.callId, base)
@@ -476,7 +506,9 @@ export function apply(ctx, config) {
 
       let verdict
       let elapsed
+      let shielding
       if (screens && full.length >= config.shieldMinChars) {
+        shielding = deciding(exec.agent.session, { reflex: 'shield', ...target })
         const started = performance.now()
         try {
           verdict = await screen({
@@ -486,9 +518,11 @@ export function apply(ctx, config) {
           })
         } catch (error) {
           trace({ ev: 's1', reflex: 'shield', session: state?.id, tool: exec.name, call: briefCall(exec), error: String(error?.message ?? error) })
-          if (!exec.signal?.aborted) record(exec.agent.session, { reflex: 'shield', ...target, error: subject(error?.message ?? error) })
+          if (!exec.signal?.aborted) shielding.answer({ error: subject(error?.message ?? error) })
+          else shielding.drop()
         }
         elapsed = performance.now() - started
+        shielding.hold()
       }
       if (verdict) {
         trace({
@@ -498,14 +532,20 @@ export function apply(ctx, config) {
           flagged: verdict.flagged.map(entry => ({ p: round3(entry.p), text: clip(entry.text, 400), lines: entry.lines.map(line => ({ p: round3(line.p), text: line.text })), spans: entry.spans })),
         })
       }
-      const downstream = await next()
+      let downstream
+      try {
+        downstream = await next()
+      } catch (error) {
+        shielding?.drop()
+        throw error
+      }
       const removed = verdict && (verdict.removedLines > 0 || verdict.removedSpans > 0)
       if (verdict) {
         // A later handler that blocks the result keeps the whole passage from the model, so the injection was found, not removed.
         const outcome = !removed ? 'clean' : downstream.kind === 'block' ? 'flagged' : 'removed'
         const shown = verdict.flagged.flatMap(entry => entry.excerpts).slice(0, 2)
-        record(exec.agent.session, {
-          reflex: 'shield', ...target, model: verdict.model, ms: ms(elapsed), passages: verdict.passages, flagged: verdict.flagged.length,
+        shielding.answer({
+          model: verdict.model, ms: ms(elapsed), passages: verdict.passages, flagged: verdict.flagged.length,
           removedLines: verdict.removedLines, maxP: round3(verdict.maxP), verdict: outcome,
           ...(verdict.spanModel ? { spanModel: verdict.spanModel, spanMs: ms(verdict.spanMs) } : {}),
           ...(verdict.removedSpans ? { removedSpans: verdict.removedSpans, removedChars: verdict.removedChars, excerpts: shown } : {}),
@@ -521,7 +561,9 @@ export function apply(ctx, config) {
         state.privacyOff = true
         record(exec.agent.session, { reflex: 'privacy', ...target, verdict: 'error', error: `${config.spanModel} answers no span questions yet` })
       }
+      let masking
       if (masks && spans) {
+        masking = deciding(exec.agent.session, { reflex: 'privacy', ...target })
         const started = performance.now()
         try {
           const parts = windows(body, 12000)
@@ -538,19 +580,17 @@ export function apply(ctx, config) {
           privacy = { model, ms: performance.now() - started, spans: found }
         } catch (error) {
           trace({ ev: 's1', reflex: 'privacy', session: state?.id, tool: exec.name, call: briefCall(exec), error: String(error?.message ?? error) })
-          if (!exec.signal?.aborted) record(exec.agent.session, { reflex: 'privacy', ...target, verdict: 'error', error: subject(error?.message ?? error) })
+          if (!exec.signal?.aborted) masking.answer({ verdict: 'error', error: subject(error?.message ?? error) })
+          else masking.drop()
         }
       }
       const hidden = privacy?.spans.length ? privacy.spans : []
       if (privacy) {
         const labels = labelCounts(hidden)
         trace({ ev: 's1', reflex: 'privacy', session: state?.id, turn: state?.turn, tool: exec.name, call: briefCall(exec), model: privacy.model, ms: ms(privacy.ms), masked: hidden.length, labels })
-        if (hidden.length) {
-          record(exec.agent.session, {
-            reflex: 'privacy', ...target, model: privacy.model, ms: ms(privacy.ms), verdict: 'masked', masked: hidden.length, labels,
-            excerpts: excerpts(body, hidden, { hide: true, around: 40, max: 3 }),
-          })
-        }
+        masking.answer(hidden.length
+          ? { model: privacy.model, ms: ms(privacy.ms), verdict: 'masked', masked: hidden.length, labels, excerpts: excerpts(body, hidden, { hide: true, around: 40, max: 3 }) }
+          : { model: privacy.model, ms: ms(privacy.ms), verdict: 'clean', masked: 0 })
       }
       if (!removed && hidden.length === 0) return downstream
 
@@ -593,6 +633,7 @@ export function apply(ctx, config) {
       const reads = state.reads ?? []
       // a plain cut: clip's "(+N chars)" would read as a claim of the answer
       const answered = (state.assistant || '').slice(0, 8000)
+      const decision = deciding(agent.session, { reflex: 'done', turn, step: state.step })
       let haluTask
       if (config.doneHalu && reads.length > 0 && answered && (await spansOn())) {
         const evidence = []
@@ -617,7 +658,8 @@ export function apply(ctx, config) {
         response = await client.ask({ model: config.model, questions: DONE, inputs: [{ state: situation }], signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
       } catch (error) {
         trace({ ev: 's1', reflex: 'done', session: state.id, turn, error: String(error?.message ?? error) })
-        if (!signal?.aborted) record(agent.session, { reflex: 'done', turn, step: state.step, error: subject(error?.message ?? error) })
+        if (!signal?.aborted) decision.answer({ error: subject(error?.message ?? error) })
+        else decision.drop()
         return
       }
       const answers = response.answers[0]
@@ -635,8 +677,8 @@ export function apply(ctx, config) {
         ev: 's1', reflex: 'done', session: state.id, turn, model: response.model, ms: ms(response.ms), verdict: steer ? 'continue' : 'stop',
         answers: answersOf(answers), calls: state.calls.length, ...(halu ? { spanModel: halu.model, halu: unsupported.map(span => ({ text: clip(span.text, 200), p: round3(span.probability) })) } : {}),
       })
-      record(agent.session, {
-        reflex: 'done', turn, step: state.step, model: response.model, ms: ms(response.ms), requestId: response.requestId, answers: answersOf(answers),
+      decision.answer({
+        model: response.model, ms: ms(response.ms), requestId: response.requestId, answers: answersOf(answers),
         verdict: steer ? 'continue' : 'stop', why,
         steers: state.steers + (steer ? 1 : 0), maxSteers: config.doneMaxSteers, calls: state.calls.length,
         ...(halu ? { spanModel: halu.model, spanMs: ms(halu.ms), unsupported: unsupported.length, excerpts: excerpts(answered, unsupported, { around: 50, max: 3 }) } : {}),
