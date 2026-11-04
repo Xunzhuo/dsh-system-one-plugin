@@ -20,7 +20,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import * as dshSession from '@deepseek-ai/dsh-session'
 import { ITEMS_PER_REQUEST, createDecisionClient, compactAnswer, yes } from './client.js'
 import { SERVICES, appendDotenv, describeKeys, ensureKeys, readDotenv } from './keys.js'
-import { DANGER_SPANS, DONE, EFFORT_LEVELS, GUARD, HALU_SPANS, PII_SPANS, RISK_LEVELS, TRIAGE } from './questions.js'
+import { DANGER_SPANS, DONE, EFFORT_LEVELS, GUARD, HALU_SPANS, HARM_SIGNAL, PII_SPANS, REFUSAL_SIGNAL, REPLY_HARM_SIGNAL, RISK_LEVELS, TRIAGE } from './questions.js'
 import { UI_MODES, approvalOutcome, createRecorder, relativeTo, subject } from './records.js'
 import { screen } from './shield.js'
 import { excerpts, labelCounts, maskLabel, placeSpans, replaceSpans, toCommands, windows } from './spans.js'
@@ -52,18 +52,26 @@ export const Config = z.object({
   guardSpans: z.boolean().default(true),
   doneHalu: z.boolean().default(true),
   doneHaluAt: z.number().default(0.6),
-  privacy: z.boolean().default(false),
+  // the router's safety signals (Vela 3.0), asked in the same request: harm beside the guard's questions, refusal
+  // beside the done-check's
+  signals: z.boolean().default(true),
+  privacy: z.boolean().default(true),
   privacyAt: z.number().default(0.5),
   // the pii preset's sensitive labels; the others (dates, organizations, places, titles...) pass, as in vllm-sr's router
   privacyLabels: z.array(z.string()).default(['PERSON', 'EMAIL_ADDRESS', 'PHONE_NUMBER', 'STREET_ADDRESS', 'CREDIT_CARD', 'IBAN_CODE', 'US_SSN', 'US_DRIVER_LICENSE', 'IP_ADDRESS']),
   privacyTools: z.array(z.string()).default(['web_fetch', 'bash', 'read']),
 
   guard: z.boolean().default(true),
+  // a span model answers the guard's questions, its signals and the dangerous part in one request
+  guardModel: z.string().default('vllm-sr/vela3-turbo'),
   guardTools: z.array(z.string()).default(['bash', 'write', 'edit', 'apply_patch', 'web_fetch']),
   guardDenyAt: z.number().default(2.5),
   guardAskAt: z.number().default(1.8),
   guardExfiltrationAt: z.number().default(0.7),
   guardOffTaskBelow: z.number().default(0.15),
+  // r_harm that asks you about a call the questions allowed; with p_harm as high too, a call they asked about is denied
+  guardHarmAt: z.number().default(0.9),
+  guardHarmDenyAt: z.number().default(0.98),
   guardAskMode: z.union(['ask', 'deny']).default('ask'),
   guardOnError: z.union(['allow', 'ask', 'deny']).default('allow'),
 
@@ -77,8 +85,12 @@ export const Config = z.object({
   triage: z.boolean().default(true),
 
   doneCheck: z.boolean().default(true),
+  // a span model answers the done-check's questions, the unsupported claims and its refusal signal in one request
+  doneModel: z.string().default('vllm-sr/vela3-turbo'),
   doneMaxSteers: z.number().default(2),
   doneCompleteBelow: z.number().default(0.5),
+  // r_refusal from which an answer that declined is not sent back
+  doneRefusalAt: z.number().default(0.5),
 
   tool: z.boolean().default(true),
   toolName: z.string().default('system_one'),
@@ -110,8 +122,9 @@ function ms(value) {
 const round3 = value => Math.round(value * 1000) / 1000
 const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`
 
+// under a second in milliseconds (182 ms), from a second up in seconds (1.4 s), as Chat shows a latency
 function seconds(value) {
-  return `${(value / 1000).toFixed(2)} s`
+  return Math.round(value) < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(1)} s`
 }
 
 function describeCall(exec) {
@@ -139,6 +152,13 @@ function briefCall(exec) {
   if (args.url) return args.url
   if (exec.name === 'system_one') return clip(args.file ?? (args.images ? `${args.images.length} images` : `${args.items?.length ?? 0} items`), 120)
   return clip(JSON.stringify(args), 160)
+}
+
+// The call as the guard's one request names its parts: the request, the workspace, the tool and what it runs or writes.
+function callParts(exec, request, workspace) {
+  const [first, ...rest] = describeCall(exec).split('\n')
+  const command = exec.name === 'bash' ? clip(exec.arguments?.command, 1500) : rest.join('\n')
+  return { request: clip(request || '(unknown)', 1500), workspace, tool: first.replace(/^tool: /, ''), command }
 }
 
 export function apply(ctx, config) {
@@ -204,19 +224,24 @@ export function apply(ctx, config) {
     }
   }
 
-  // Whether spanModel answers span questions: `auto` asks the published models list, again every ten minutes.
-  let spanCheck
+  // Which models answer span questions, and with them the router's signals (the Vela 3.0 models): the published models
+  // list, asked again every ten minutes. `spans: on` vouches for spanModel without asking.
+  let cardCheck
+  function spanAnswers(model) {
+    if (config.spans === 'on' && model === config.spanModel) return Promise.resolve(true)
+    if (!cardCheck || cardCheck.until < Date.now()) {
+      const ready = client.models()
+        .then(cards => new Set(cards.filter(card => Array.isArray(card?.question_types) && card.question_types.includes('span')).map(card => card.id)))
+        .catch(() => new Set())
+      cardCheck = { until: Date.now() + 600000, ready }
+      ready.then(spanModels => trace({ ev: 'spans', models: [...spanModels] }))
+    }
+    return cardCheck.ready.then(spanModels => spanModels.has(model))
+  }
+  // whether spanModel's span answers are on: `auto` (the default) once the models list says it answers them
   function spansOn() {
     if (config.spans === 'off') return Promise.resolve(false)
-    if (config.spans === 'on') return Promise.resolve(true)
-    if (!spanCheck || spanCheck.until < Date.now()) {
-      const ready = client.models()
-        .then(cards => cards.some(card => card?.id === config.spanModel && Array.isArray(card.question_types) && card.question_types.includes('span')))
-        .catch(() => false)
-      spanCheck = { until: Date.now() + 600000, ready }
-      ready.then(on => trace({ ev: 'spans', model: config.spanModel, on }))
-    }
-    return spanCheck.ready
+    return spanAnswers(config.spanModel)
   }
 
   function sessionState(agent) {
@@ -405,9 +430,22 @@ export function apply(ctx, config) {
       ].join('\n\n')
       const base = { reflex: 'guard', turn: state?.turn, step: state?.step, callId: exec.callId, tool: exec.name, call: subject(relativeTo(briefCall(exec), workspace, homedir())) }
       const decision = deciding(exec.agent.session, base)
+      // A span model takes the questions, the dangerous part and the router's harm signals in one request: p_harm over
+      // the call's parts, r_harm over the request and the call as a user turn and its answer. Another model takes the
+      // questions over the text, and the span model, if any, marks the dangerous part of a flagged call afterwards.
+      const one = await spanAnswers(config.guardModel)
+      const parts = callParts(exec, state?.user, workspace)
+      const marks = one && config.guardSpans && config.spans !== 'off'
+      const signals = one && config.signals
+      const inputs = one
+        ? [
+            { state: parts, questions: { ...GUARD, ...(marks ? DANGER_SPANS : {}), ...(signals ? HARM_SIGNAL : {}) } },
+            ...(signals ? [{ state: { user: parts.request, answer: parts.command }, questions: REPLY_HARM_SIGNAL }] : []),
+          ]
+        : [{ state: situation }]
       let response
       try {
-        response = await client.ask({ model: config.model, questions: GUARD, inputs: [{ state: situation }], signal: exec.signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
+        response = await client.ask({ model: config.guardModel, questions: GUARD, inputs, signal: exec.signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
       } catch (error) {
         trace({ ev: 's1', reflex: 'guard', session: state?.id, tool: exec.name, call: briefCall(exec), error: String(error?.message ?? error) })
         if (!exec.signal?.aborted) {
@@ -418,13 +456,16 @@ export function apply(ctx, config) {
         if (config.guardOnError === 'ask') return { kind: 'ask', reason: 'System One is unavailable', displayReason: { en: 'System One is unavailable: allow this call?' } }
         return next()
       }
-      const answers = response.answers[0]
+      // the second entry's answers (r_harm) join the first's; their ids differ
+      const answers = Object.assign({}, ...response.answers)
       const risk = answers.risk?.score
       const exfiltration = yes(answers.exfiltration)
       const onTask = yes(answers.on_task)
+      const harm = answers.r_harm?.probabilities?.['unsafe response']
+      const unsafe = answers.p_harm?.probabilities?.unsafe
       const riskLabel = typeof risk === 'number' ? RISK_LEVELS[Math.min(3, Math.round(risk))] : '?'
       const riskP = answers.risk?.probabilities?.[String(Math.min(3, Math.round(risk ?? 0)))]
-      const facts = `risk ${riskLabel} (${risk?.toFixed(2) ?? '?'} of 3${riskP !== undefined ? `, p ${riskP.toFixed(2)}` : ''}) · leaks secrets ${exfiltration?.toFixed(2) ?? '?'} · on task ${onTask?.toFixed(2) ?? '?'}`
+      const facts = `risk ${riskLabel} (${risk?.toFixed(2) ?? '?'} of 3${riskP !== undefined ? `, p ${riskP.toFixed(2)}` : ''}) · leaks secrets ${exfiltration?.toFixed(2) ?? '?'} · on task ${onTask?.toFixed(2) ?? '?'}${harm !== undefined ? ` · harmful ${harm.toFixed(2)}` : ''}`
       let verdict = 'allow'
       let why = ''
       if (exfiltration !== undefined && exfiltration >= config.guardExfiltrationAt) {
@@ -437,15 +478,28 @@ export function apply(ctx, config) {
         verdict = config.guardAskMode === 'deny' ? 'deny' : 'ask'
         why = risk !== undefined && risk >= config.guardAskAt ? `its risk is ${riskLabel}` : 'it does not look like part of the task'
       }
-      // A flagged call: which part of it does the damage (span model), so the card and the question can point at it.
+      // The router's harm heads, a second opinion: one sure the call is harmful asks about a call the questions allowed,
+      // and both sure turn a question into a block.
+      if (verdict === 'allow' && harm !== undefined && harm >= config.guardHarmAt) {
+        verdict = config.guardAskMode === 'deny' ? 'deny' : 'ask'
+        why = 'the router\'s harm check calls it harmful'
+      } else if (verdict === 'ask' && harm >= config.guardHarmDenyAt && unsafe >= config.guardHarmDenyAt) {
+        verdict = 'deny'
+        why = `${why}, and both of the router's harm checks call it harmful`
+      }
+      // A flagged call: which part of it does the damage, so the card and the question can point at it.
       let danger
-      if (verdict !== 'allow' && config.guardSpans && (await spansOn())) {
+      const place = (spans, command, model, took) => ({
+        model, ms: took, spans: toCommands(command, placeSpans(spans, command, { min: 0.5 })).map(span => ({ label: span.label, text: subject(relativeTo(span.text, workspace, homedir()), 120), probability: round3(span.probability) })),
+      })
+      if (verdict !== 'allow' && marks) {
+        danger = place(response.spans[0]?.dangerous, parts.command, response.model)
+      } else if (verdict !== 'allow' && !one && config.guardSpans && (await spansOn())) {
         const command = briefCall(exec)
         const started = performance.now()
         try {
-          const answer = await client.ask({ model: config.spanModel, questions: DANGER_SPANS, inputs: [{ state: { request: clip(state?.user || '(unknown)', 1500), command } }], signal: exec.signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
-          const placed = toCommands(command, placeSpans(answer.spans[0]?.dangerous, command, { min: 0.5 }))
-          danger = { model: answer.model, ms: performance.now() - started, spans: placed.map(span => ({ label: span.label, text: subject(relativeTo(span.text, workspace, homedir()), 120), probability: round3(span.probability) })) }
+          const answer = await client.ask({ model: config.spanModel, questions: DANGER_SPANS, inputs: [{ state: { request: parts.request, command } }], signal: exec.signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
+          danger = place(answer.spans[0]?.dangerous, command, answer.model, performance.now() - started)
         } catch (error) {
           trace({ ev: 's1', reflex: 'guard', session: state?.id, tool: exec.name, spans: 'error', error: String(error?.message ?? error) })
         }
@@ -457,7 +511,7 @@ export function apply(ctx, config) {
       })
       decision.answer({
         model: response.model, ms: ms(response.ms), requestId: response.requestId, answers: answersOf(answers), verdict, why,
-        ...(danger ? { spanModel: danger.model, spanMs: ms(danger.ms), danger: danger.spans } : {}),
+        ...(danger ? { spanModel: danger.model, ...(danger.ms === undefined ? {} : { spanMs: ms(danger.ms) }), danger: danger.spans } : {}),
       })
       if (verdict === 'ask') state?.asked.set(exec.callId, base)
       if (verdict === 'deny') {
@@ -624,28 +678,37 @@ export function apply(ctx, config) {
       if (state.calls.length === 0 && state.triage?.kind === 'chat') return
       if (state.steers >= config.doneMaxSteers) return
       const steps = state.calls.slice(-30).map((call, index) => `${index + 1}. ${call.tool}: ${call.brief}${call.ok ? '' : '  (failed)'}`)
+      const did = `What the assistant did (tool calls, in order):\n${steps.length ? steps.join('\n') : '(no tool calls)'}`
       const situation = [
         `The user asked:\n"""${clip(state.user, 3000)}"""`,
-        `What the assistant did (tool calls, in order):\n${steps.length ? steps.join('\n') : '(no tool calls)'}`,
+        did,
         `The assistant's final message:\n"""${clip(state.assistant || '(none)', 3000)}"""`,
       ].join('\n\n')
-      // Beside it, a span model marks the words of the answer that nothing the turn read supports (preset halu).
+      // The words of the answer that nothing the turn read supports (preset halu) are marked against what it read.
       const reads = state.reads ?? []
       // a plain cut: clip's "(+N chars)" would read as a claim of the answer
       const answered = (state.assistant || '').slice(0, 8000)
       const decision = deciding(agent.session, { reflex: 'done', turn, step: state.step })
+      const asked = `The user asked:\n${clip(state.user, 2000)}`
+      // the span model's state holds 32,000 code points (vllm-sr/vela3-turbo) as JSON, escapes included: the latest
+      // reads go in while the request, the steps, the reads and the answer still fit
+      const fits = parts => JSON.stringify({ context: [asked, did, ...parts].join('\n\n'), answer: answered || '(none)' }).length <= 31000
+      const evidence = []
+      for (const read of [...reads].reverse()) {
+        const part = `[${read.tool}] ${read.brief}\n${read.text}`
+        if (!fits([part, ...evidence])) break
+        evidence.unshift(part)
+      }
+      // A span model takes the questions, the unsupported claims and the refusal signal in one request: the questions
+      // and the claims over what the turn did and read (`context`) and its answer, r_refusal over the request and the
+      // answer. Another model takes the questions over the text, beside the span model's claims, if any.
+      const one = await spanAnswers(config.doneModel)
+      const weighsClaims = config.doneHalu && config.spans !== 'off' && reads.length > 0 && answered.length > 0
+      const signals = one && config.signals
       let haluTask
-      if (config.doneHalu && reads.length > 0 && answered && (await spansOn())) {
-        const evidence = []
-        let budget = 22000
-        for (const read of [...reads].reverse()) {
-          const part = `[${read.tool}] ${read.brief}\n${read.text}`
-          if (part.length > budget) break
-          evidence.unshift(part)
-          budget -= part.length
-        }
-        const context = [`The user asked:\n${clip(state.user, 2000)}`, ...evidence].join('\n\n')
+      if (weighsClaims && !one && (await spansOn())) {
         const started = performance.now()
+        const context = [asked, ...evidence].join('\n\n')
         haluTask = client.ask({ model: config.spanModel, questions: HALU_SPANS, inputs: [{ state: { context, answer: answered } }], signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
           .then(answer => ({ model: answer.model, ms: performance.now() - started, spans: placeSpans(answer.spans[0]?.halu, answered, { min: config.doneHaluAt }) }))
           .catch(error => {
@@ -653,26 +716,39 @@ export function apply(ctx, config) {
             return undefined
           })
       }
+      const context = [asked, did, ...evidence].join('\n\n')
+      const inputs = one
+        ? [
+            { state: { context, answer: answered || '(none)' }, questions: { ...DONE, ...(weighsClaims ? HALU_SPANS : {}) } },
+            ...(signals && answered ? [{ state: { user: clip(state.user, 2000), answer: answered }, questions: REFUSAL_SIGNAL }] : []),
+          ]
+        : [{ state: situation }]
       let response
       try {
-        response = await client.ask({ model: config.model, questions: DONE, inputs: [{ state: situation }], signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
+        response = await client.ask({ model: config.doneModel, questions: DONE, inputs, signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
       } catch (error) {
         trace({ ev: 's1', reflex: 'done', session: state.id, turn, error: String(error?.message ?? error) })
         if (!signal?.aborted) decision.answer({ error: subject(error?.message ?? error) })
         else decision.drop()
         return
       }
-      const answers = response.answers[0]
+      const answers = Object.assign({}, ...response.answers)
       const complete = yes(answers.complete)
       const checked = yes(answers.checked)
       const waiting = yes(answers.waiting)
+      const refusal = answers.r_refusal?.probabilities?.refusal
       const unfinished = complete !== undefined && complete < config.doneCompleteBelow
       const unchecked = checked !== undefined && checked < 0.3 && state.calls.some(call => ['write', 'edit', 'apply_patch'].includes(call.tool))
-      const halu = haluTask ? await haluTask : undefined
+      const halu = one && weighsClaims
+        ? { model: response.model, ms: response.ms, spans: placeSpans(response.spans[0]?.halu, answered, { min: config.doneHaluAt }) }
+        : haluTask ? await haluTask : undefined
       const unsupported = halu?.spans ?? []
       const asking = waiting !== undefined && waiting >= 0.5
-      const steer = (unfinished || unchecked || unsupported.length > 0) && !asking
-      const why = steer ? (unfinished ? 'unfinished' : unchecked ? 'unchecked' : 'unsupported') : unfinished || unchecked ? 'waiting' : 'complete'
+      // an answer that declined (the user rejected a step, or the request) is not pushed to carry on
+      const declined = refusal !== undefined && refusal >= config.doneRefusalAt
+      const steer = (unfinished || unchecked || unsupported.length > 0) && !asking && !declined
+      const why = steer ? (unfinished ? 'unfinished' : unchecked ? 'unchecked' : 'unsupported')
+        : declined && (unfinished || unchecked || unsupported.length > 0) ? 'declined' : unfinished || unchecked ? 'waiting' : 'complete'
       trace({
         ev: 's1', reflex: 'done', session: state.id, turn, model: response.model, ms: ms(response.ms), verdict: steer ? 'continue' : 'stop',
         answers: answersOf(answers), calls: state.calls.length, ...(halu ? { spanModel: halu.model, halu: unsupported.map(span => ({ text: clip(span.text, 200), p: round3(span.probability) })) } : {}),

@@ -36,6 +36,9 @@ function render(node) {
 }
 
 const textOf = tree => (tree === null ? '' : typeof tree === 'string' ? tree : Array.isArray(tree) ? tree.map(textOf).join('') : textOf(tree.props.children))
+// a row as it reads: its dots between parts as " · ", without the copy of the line its shimmer sweeps across
+const spoken = tree => (tree === null ? '' : typeof tree === 'string' ? tree : Array.isArray(tree) ? tree.map(spoken).join('')
+  : tree.props.className === 'vsr-s1__sep' ? ' · ' : tree.props.className === 'vsr-s1__shim-deco' ? '' : spoken(tree.props.children))
 function findAll(tree, match, found = []) {
   if (tree && typeof tree === 'object' && !Array.isArray(tree)) {
     if (match(tree.props ?? {})) found.push(tree)
@@ -156,14 +159,33 @@ test('a guard card names the call, the risk and the verdict, and takes in your a
   assert.equal(node.data.rows.length, 2)
   const tree = render(exports.SystemOneNode({ node }))
   const text = textOf(tree)
-  for (const expected of ['System One', '0.48 s', 'Guard', '2 calls · 1 allowed · 1 rejected by you', 'd3-ultra', 'Allowed', 'git status', 'Safe · 0.31 of 3',
+  for (const expected of ['System One', '480 ms', 'Guard', '2 calls · 1 allowed · 1 rejected by you', 'd3-ultra', 'Allowed', 'git status', 'Safe · 0.31 of 3',
     'Asked you', 'You rejected it', 'Dangerous · 2.10 of 3', 'Because its risk is Dangerous.', 'Leaks secrets', 'On task']) {
     assert.ok(text.includes(expected), `missing ${expected} in: ${text}`)
   }
   const [card] = findAll(tree, props => props['data-system-one'] === 'card')
-  assert.deepEqual([card.props['data-system-one-reflex'], card.props['data-system-one-verdict'], card.props['data-system-one-count']], ['guard', 'ask', '2'])
-  assert.match(card.props.className, /vsr-s1--bad/)
+  assert.deepEqual([card.props['data-system-one-reflex'], card.props['data-system-one-verdict'], card.props['data-system-one-count'], card.props['data-system-one-tone']], ['guard', 'ask', '2', 'bad'])
   assert.deepEqual(findAll(tree, props => props['data-system-one-decision']).map(row => [row.props['data-system-one-decision'], row.props['data-system-one-call']]), [['allow', 'c1'], ['ask', 'c2']])
+  // its head reads as a tool row, with one model name at its end
+  const head = findAll(tree, props => props['data-system-one-part'] === 'head')[0]
+  assert.equal(spoken(head.props.children.filter(child => child.props?.['data-system-one-part'] !== 'model')), 'System One · 480 ms · Guard · 2 calls · 1 allowed · 1 rejected by you')
+  assert.deepEqual(findAll(head, props => props['data-system-one-part'] === 'model').map(textOf), ['vllm-sr/d3-ultra'])
+
+  // the card stays blue; red and amber are only on what is inside it: the level, the asking hint and your answer
+  const toned = className => findAll(tree, props => typeof props.className === 'string' && props.className.split(' ').includes(className)).map(textOf)
+  assert.deepEqual(toned('vsr-s1__level--bad'), ['Dangerous'])
+  assert.deepEqual(toned('vsr-s1__pill--warn'), ['Asked you'])
+  assert.deepEqual(toned('vsr-s1__pill--bad'), ['You rejected it'])
+  assert.deepEqual(toned('vsr-s1__pill--ok'), ['Allowed'])
+})
+
+test('a latency under a second reads in milliseconds, and from a second up in seconds', () => {
+  const { exports } = load()
+  const said = ms => {
+    const [node] = assemble(exports.definition, [record({ reflex: 'triage', step: 1, ms, answers: { kind: { choice: 'code', confidence: 0.9 }, effort: { score: 1 }, unclear: { yes: 0 }, risky: { yes: 0 } } })])
+    return textOf(findAll(render(exports.SystemOneNode({ node })), props => props['data-system-one-part'] === 'latency')[0])
+  }
+  assert.deepEqual([182, 999.4, 999.6, 1000, 1400, 12345].map(said), ['182 ms', '999 ms', '1.0 s', '1.0 s', '1.4 s', '12.3 s'])
 })
 
 const attrs = (element, names) => Object.fromEntries(names.map(name => [name, element.props[`data-system-one${name ? `-${name}` : ''}`]]))
@@ -184,7 +206,7 @@ test('every element carries the selectors README.md documents', () => {
   const asked = render(exports.SystemOneNode({ node: guard }))
   const [card] = findAll(asked, props => props['data-system-one'])
   assert.deepEqual(attrs(card, ROOT), { '': 'card', reflex: 'guard', verdict: 'ask', outcome: 'rejected', why: undefined, tone: 'bad', count: '1', turn: '1', step: '4' })
-  assert.deepEqual(parts(asked), ['head', 'badge', 'latency', 'reflex', 'summary', 'model', 'rows', 'verdict', 'outcome', 'subject', 'facts', 'note'])
+  assert.deepEqual(parts(asked), ['head', 'icon', 'badge', 'latency', 'reflex', 'summary', 'model', 'rows', 'verdict', 'outcome', 'subject', 'facts', 'note'])
   assert.deepEqual(findAll(asked, props => props['data-system-one-fact']).map(fact => fact.props['data-system-one-fact']), ['risk', 'leaks', 'on-task'])
   const [row] = findAll(asked, props => props['data-system-one-decision'])
   assert.deepEqual([row.props['data-system-one-decision'], row.props['data-system-one-outcome'], row.props['data-system-one-call']], ['ask', 'rejected', 'c2'])
@@ -196,7 +218,7 @@ test('every element carries the selectors README.md documents', () => {
 
   const line = render(exports.SystemOneNode({ node: routine }))
   assert.deepEqual(attrs(findAll(line, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'tone']), { '': 'compact', reflex: 'guard', verdict: 'allow', tone: 'ok' })
-  assert.deepEqual(parts(line), ['toggle', 'badge', 'latency', 'reflex', 'summary', 'verdict'])
+  assert.deepEqual(parts(line), ['toggle', 'icon', 'badge', 'latency', 'reflex', 'summary', 'verdict'])
 
   const doneTree = render(exports.SystemOneNode({ node: done }))
   assert.deepEqual(attrs(findAll(doneTree, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'why', 'tone', 'step']), { '': 'card', reflex: 'done', verdict: 'stop', why: 'waiting', tone: 'info', step: undefined })
@@ -208,7 +230,7 @@ test('every element carries the selectors README.md documents', () => {
 
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
   const selectors = readme.slice(readme.indexOf('### Selectors'), readme.indexOf('## Your data'))
-  const drawn = new Set([...SOURCE.matchAll(/(?:'data-system-one-part'|\bpart): '([a-z-]+)'/g), ...SOURCE.matchAll(/\bid: '([a-z-]+)', label:/g)].map(match => match[1]))
+  const drawn = new Set([...SOURCE.matchAll(/(?:'data-system-one-part'|\bpart): (?:marked \? )?'([a-z-]+)'/g), ...SOURCE.matchAll(/\bid: '([a-z-]+)', label:/g)].map(match => match[1]))
   assert.ok(drawn.size >= 30)
   for (const value of drawn) assert.ok(selectors.includes(`\`${value}\``), `README.md documents ${value}`)
   for (const [, value] of selectors.matchAll(/data-system-one-(?:part|fact)="([a-z-]+)"/g)) assert.ok(drawn.has(value), `${value} is drawn by web/client.js`)
@@ -223,8 +245,8 @@ test('the free-key line says what happened, under the request, in either mode', 
   assert.equal(made.groupTree, 'turn', 'it stays visible when the turn folds')
   const line = render(exports.SystemOneNode({ node: made }))
   assert.deepEqual(attrs(findAll(line, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'tone', 'turn']), { '': 'notice', reflex: 'key', verdict: 'created', tone: 'ok', turn: '1' })
-  assert.equal(textOf(line), 'System DuoFree API key created for app.vllm-sr.ai, saved in ~/.dsh/.envTermsPrivacy')
-  assert.deepEqual(parts(line), ['badge', 'summary', 'links'])
+  assert.equal(spoken(line), 'System Duo · Free API key created for app.vllm-sr.ai, saved in ~/.dsh/.env · TermsPrivacy')
+  assert.deepEqual(parts(line), ['icon', 'badge', 'summary', 'links'])
   assert.deepEqual(findAll(line, props => props.href).map(link => link.props.href), ['https://app.vllm-sr.ai/terms', 'https://app.vllm-sr.ai/privacy'])
 
   const no = render(exports.SystemOneNode({ node: refused }))
@@ -272,7 +294,9 @@ test('span answers: removed injections, masked personal data, unsupported claims
   const s = render(exports.SystemOneNode({ node: shield }))
   assert.deepEqual(marks(s), [['INJECTION', injection, 'vsr-s1__span--removed']])
   assert.deepEqual(attrs(rootOf(s), ['reflex', 'verdict', 'spans', 'span-model']), { reflex: 'shield', verdict: 'removed', spans: '1', 'span-model': span })
-  assert.equal(textOf(findAll(s, props => props['data-system-one-part'] === 'model')[0]), 'vllm-sr/d3-ultra + vllm-sr/vela3-turbo')
+  // one model in the head; the span model, a second one, is named in the card's rows
+  assert.deepEqual(findAll(s, props => props['data-system-one-part'] === 'model').map(textOf), ['vllm-sr/d3-ultra'])
+  assert.deepEqual(findAll(s, props => props['data-system-one-part'] === 'span-model').map(textOf), ['Spans by vllm-sr/vela3-turbo · 410 ms'])
   assert.ok(textOf(s).includes(`Removed 1 span of text (${injection.length} characters) that gave orders to AI agents before System Two read the result; the text around it stayed.`), textOf(s))
 
   const p = render(exports.SystemOneNode({ node: privacy }))
@@ -290,6 +314,25 @@ test('span answers: removed injections, masked personal data, unsupported claims
   const g = render(exports.SystemOneNode({ node: guard }))
   assert.deepEqual(marks(g), [['DANGEROUS', 'reset --hard v1.3', 'vsr-s1__span--dangerous']])
   assert.equal(textOf(findAll(g, props => props.className === 'vsr-s1__code')[0]), 'git -C orders-api reset --hard v1.3')
+  assert.deepEqual(findAll(g, props => props['data-system-one-part'] === 'model').map(textOf), ['vllm-sr/d3-ultra'])
+
+  // the guard and the done-check on vllm-sr/vela3-turbo alone: one model, and its router signals among the facts
+  const [alone, declined] = assemble(exports.definition, [
+    record({ reflex: 'guard', step: 7, callId: 'c6', tool: 'bash', call: 'git reset --hard v1.3', model: span, spanModel: span, verdict: 'ask', why: 'its risk is Dangerous',
+      answers: { ...guardAnswers(1.99), r_harm: { choice: 'unsafe response', confidence: 0.97, p: { 'safe response': 0.03, 'unsafe response': 0.97 } }, p_harm: { choice: 'unsafe', confidence: 0.66, p: { safe: 0.34, unsafe: 0.66 } } },
+      danger: [{ label: 'DANGEROUS', text: 'git reset --hard v1.3', probability: 0.84 }] }),
+    record({ reflex: 'done', turn: 3, model: span, spanModel: span, verdict: 'stop', why: 'declined', steers: 0, maxSteers: 2, unsupported: 0,
+      answers: { complete: { yes: 0.03 }, checked: { yes: 0.21 }, waiting: { yes: 0.17 }, r_refusal: { choice: 'refusal', confidence: 0.89, p: { compliance: 0.11, refusal: 0.89 } } } }),
+  ])
+  const a = render(exports.SystemOneNode({ node: alone }))
+  assert.deepEqual(findAll(a, props => props['data-system-one-part'] === 'model').map(textOf), [span])
+  assert.equal(findAll(a, props => props['data-system-one-part'] === 'span-model').length, 0)
+  assert.deepEqual(findAll(a, props => props['data-system-one-fact']).map(fact => [fact.props['data-system-one-fact'], textOf(fact)]), [
+    ['risk', 'RiskDangerous · 1.99 of 3'], ['leaks', 'Leaks secrets0.02'], ['on-task', 'On task0.95'], ['harm', 'Harmful call0.97'], ['request-harm', 'Harmful request0.66'],
+  ])
+  const n = render(exports.SystemOneNode({ node: declined }))
+  assert.deepEqual(attrs(rootOf(n), ['reflex', 'verdict', 'why', 'tone']), { reflex: 'done', verdict: 'stop', why: 'declined', tone: 'info' })
+  assert.ok(textOf(n).includes('System Two declined') && textOf(n).includes('Declined0.89') && textOf(n).includes('so System One did not send it back.'), textOf(n))
   const [elsewhere] = assemble(exports.definition, [record({ reflex: 'guard', step: 9, callId: 'c5', tool: 'bash', call: 'make clean', answers: guardAnswers(2.0), verdict: 'ask', why: 'its risk is Dangerous', spanModel: span, danger: [{ label: 'DANGEROUS', text: 'rm -rf /', probability: 0.9 }] })])
   assert.ok(textOf(render(exports.SystemOneNode({ node: elsewhere }))).includes('The dangerous part: rm -rf /'))
 })
@@ -316,7 +359,7 @@ test('a routine check is one line, compact mode makes every card one line, and a
   const tree = render(exports.SystemOneNode({ node: routine }))
   const [chip] = findAll(tree, props => props['data-system-one'] === 'compact')
   assert.ok(chip, 'an allowed call draws as one line even in card mode')
-  assert.ok(textOf(tree).includes('System One0.48 sGuardAllowed · bash npm test · risk Normal · 0.80 of 3'), textOf(tree))
+  assert.equal(spoken(tree), 'System One · 480 ms · Guard · Allowed · bash npm test · risk Normal 0.80')
   assert.equal(findAll(tree, props => props['data-system-one-decision']).length, 0, 'its details open on demand')
 
   const [triage] = assemble(exports.definition, [
@@ -324,11 +367,11 @@ test('a routine check is one line, compact mode makes every card one line, and a
   ])
   const line = render(exports.SystemOneNode({ node: triage }))
   assert.equal(findAll(line, props => props['data-system-one'] === 'compact').length, 1)
-  assert.ok(textOf(line).includes('TriageCode · effort Trivial · 0.4 of 3'), textOf(line))
+  assert.equal(spoken(line), 'System One · 480 ms · Triage · Code · effort Trivial 0.4')
 
   const [failed] = assemble(exports.definition, [record({ reflex: 'guard', callId: 'c2', tool: 'bash', call: 'make', verdict: 'allow', error: 'Decision API unreachable: timeout', model: undefined, ms: undefined })])
-  const text = textOf(render(exports.SystemOneNode({ node: failed })))
-  assert.ok(text.includes('Unavailable · bash make · Decision API unreachable: timeout'), text)
+  const text = spoken(render(exports.SystemOneNode({ node: failed })))
+  assert.equal(text, 'System One · Guard · Unavailable · bash make · Decision API unreachable: timeout')
   assert.equal(failed.groupTree, undefined)
   assert.equal(exports.viewOf('guard', failed.data.rows[0]).note, 'System One did not answer (Decision API unreachable: timeout), so the call ran.')
 })
@@ -347,7 +390,7 @@ test('the system_one row draws the batch from its result, and its progress while
   const props = { callId: 'call-7', toolName: 'system_one', cwd: '/work', openFile: path => opened.push(path), phase: 'result', block: { time: Date.now(), isError: false, content: [{ type: 'text', text: 'System One answered...' }], meta, call: { name: 'system_one', argsRaw: '{"file":"support/tickets.jsonl"}' } } }
   const tree = render(exports.SystemOneToolRow(props))
   const text = textOf(tree)
-  for (const expected of ['System One', '4.12 s', 'Batch', '230 items · 3 questions · 26 requests', 'team', 'billing', '61', '9 unsure', 'urgency', 'mean 2.4', 'churn_risk', 'yes', '190', '3 failed', 'support/tickets.s1.jsonl']) {
+  for (const expected of ['System One', '4.1 s', 'Batch', '230 items · 3 questions · 26 requests', 'team', 'billing', '61', '9 unsure', 'urgency', 'mean 2.4', 'churn_risk', 'yes', '190', '3 failed', 'support/tickets.s1.jsonl']) {
     assert.ok(text.includes(expected), `${expected} in ${text}`)
   }
   findAll(tree, props => props.className === 'vsr-s1__link')[0].props.onClick()
@@ -361,8 +404,9 @@ test('the system_one row draws the batch from its result, and its progress while
   assert.match(findAll(tree, props => props['data-system-one-part'] === 'failed')[0].props.className, /vsr-s1__key--bad/)
 
   const running = render(exports.SystemOneToolRow({ ...props, phase: 'start', block: { argsRaw: '{"file":"support/tickets.jsonl","questions":{"team":{},"urgency":{},"churn_risk":{}}}' } }))
-  assert.ok(textOf(running).includes('Answering 3 questions over tickets.jsonl'), textOf(running))
+  assert.equal(spoken(running), 'System One · Batch · Answering 3 questions over tickets.jsonl')
   assert.deepEqual(attrs(root(running), ['', 'verdict']), { '': 'tool', verdict: 'running' })
+  assert.ok(parts(running).includes('progress'), 'it shimmers while it runs')
 
   const failed = render(exports.SystemOneToolRow({ ...props, block: { ...props.block, isError: true, meta: undefined, content: [{ type: 'text', text: 'Error: questions must be an object' }] } }))
   assert.ok(textOf(failed).includes('Error: questions must be an object'))
@@ -381,7 +425,18 @@ test('a decision still deciding is one busy line, and its answer takes its place
   assert.match(root.props.className, /vsr-s1--deciding/)
   assert.ok(parts(line).includes('progress'))
   assert.ok(!parts(line).includes('latency'), 'no latency before the answer')
-  assert.ok(textOf(line).includes('Deciding · reviewing the call · bash git push --force origin main'), textOf(line))
+  assert.equal(spoken(line), 'System One · Guard · Deciding · reviewing the call · bash git push --force origin main')
+  // the shimmer is DeepSeek Harness's: a copy of the line, without selectors, in a window that sweeps across it
+  const [sweep] = findAll(line, props => props.className === 'vsr-s1__shim-sweep')
+  assert.equal(textOf(sweep), 'System OneGuardDecidingreviewing the callbash git push --force origin main')
+  assert.equal(findAll(sweep, props => props['data-system-one-part']).length, 0)
+
+  // the same line, answered and still routine, settles in place: no shimmer, its latency, a one-time settle
+  const [routine] = assemble(exports.definition, [pending, record({ reflex: 'guard', step: 3, callId: 'c1', tool: 'bash', call: 'git push --force origin main', decision: 'd1', answers: guardAnswers(0.4), verdict: 'allow' })])
+  const settled = render(exports.SystemOneNode({ node: routine }))
+  const [settledRoot] = findAll(settled, props => props['data-system-one'])
+  assert.match(settledRoot.props.className, /vsr-s1--settle/)
+  assert.ok(!parts(settled).includes('progress') && parts(settled).includes('latency'))
 
   const [answered] = assemble(exports.definition, [pending, record({ reflex: 'guard', step: 3, callId: 'c1', tool: 'bash', call: 'git push --force origin main', decision: 'd1', answers: guardAnswers(2.1), verdict: 'ask', why: 'its risk is Dangerous' })])
   assert.equal(answered.id, waiting.id)
@@ -398,25 +453,42 @@ test('a decision still deciding is one busy line, and its answer takes its place
   const [stopped] = assemble(exports.definition, [doneDeciding, record({ reflex: 'done', decision: 'd2', verdict: 'cancelled', model: undefined, ms: undefined })])
   const stoppedLine = render(exports.SystemOneNode({ node: stopped }))
   assert.deepEqual(attrs(findAll(stoppedLine, props => props['data-system-one'])[0], ['', 'verdict', 'tone']), { '': 'compact', verdict: 'cancelled', tone: 'muted' })
-  assert.ok(textOf(stoppedLine).includes('Stopped · the turn stopped before System One answered'), textOf(stoppedLine))
+  assert.equal(spoken(stoppedLine), 'System One · Done-check · Stopped · the turn stopped before System One answered')
 
   // privacy with nothing to mask is a routine line
   const [clean] = assemble(exports.definition, [record({ reflex: 'privacy', callId: 'c3', tool: 'read', call: 'notes.md', model: 'vllm-sr/vela3-turbo', verdict: 'clean', masked: 0 })])
   assert.equal(clean.groupTree, undefined)
-  assert.ok(textOf(render(exports.SystemOneNode({ node: clean }))).includes('Nothing to mask · read notes.md · masked 0'))
+  assert.equal(spoken(render(exports.SystemOneNode({ node: clean }))), 'System One · 480 ms · Privacy · Nothing to mask · read notes.md · masked 0')
 })
 
-test('System One draws in the blue of the vLLM logo, keeps red and amber for what it stops, and moves calmly', () => {
+test('System One draws in the blue of the vLLM logo, keeps red and amber inside its cards, and moves as the Web UI\'s tool rows do', () => {
   const tags = []
   const document = { head: { appendChild: tag => tags.push(tag) }, createElement: () => ({ dataset: {} }), querySelector: () => null }
   load({ document })
   const css = tags[0].textContent
   assert.match(css, /--vsr-s1-blue:#30A2FF/)
   assert.doesNotMatch(css, /#EF5630|ember/i)
-  assert.match(css, /\.vsr-s1--card\.vsr-s1--bad\{--vsr-s1-tone:var\(--vsr-s1-bad\)/)
-  assert.match(css, /\.vsr-s1--card\.vsr-s1--warn\{--vsr-s1-tone:var\(--vsr-s1-warn\)/)
+  // every card's frame, tint and accent are blue, whatever it decided
+  assert.match(css, /\.vsr-s1--card\{[^}]*border:1px solid color-mix\(in srgb,var\(--vsr-s1-blue\)/)
+  assert.doesNotMatch(css, /\.vsr-s1--card\.vsr-s1--(bad|warn)|\.vsr-s1--(bad|warn)[ >]+\.vsr-s1__(sheen|excerpt)/)
+  // red and amber are for the hints inside: the level chip, the dangerous part, a block or a rejection, and asking
+  assert.match(css, /\.vsr-s1__level--bad\{color:var\(--vsr-s1-bad\)/)
+  assert.match(css, /\.vsr-s1__span--dangerous\{color:var\(--vsr-s1-bad\)/)
+  assert.match(css, /\.vsr-s1__pill--bad\{--tone:var\(--vsr-s1-bad\)\}/)
+  assert.match(css, /\.vsr-s1__pill--warn\{--tone:color-mix\(in srgb,var\(--vsr-s1-warn\)/)
+  assert.match(css, /\.vsr-s1__pill--ok,\.vsr-s1__pill--info\{--tone:var\(--vsr-s1-ink\)\}/)
+  // the line is a tool row: 13 px muted text, a 16 px icon slot, 2 px dots, "System One" in blue as its one accent
+  assert.match(css, /\.vsr-s1__head,\.vsr-s1__chip,\.vsr-s1--notice\{[^}]*color:var\(--vsr-s1-row\);font-size:var\(--vsr-s1-row-size\);font-weight:400;line-height:24px/)
+  assert.match(css, /--vsr-s1-row:var\(--dsw-alias-label-tertiary,#81858C\)/)
+  assert.match(css, /\.vsr-s1__lead\{[^}]*width:16px;height:16px;margin-right:6px/)
+  assert.match(css, /\.vsr-s1__sep\{[^}]*width:2px;height:2px;margin:0 8px/)
+  assert.match(css, /\.vsr-s1__name\{[^}]*color:var\(--vsr-s1-ink\);font-weight:650/)
+  // its shimmer is the Web UI's sweep, and no badge pops
+  assert.match(css, /\.vsr-s1__shim-sweep\{animation:vsr-s1-sweep 1\.5s steps\(48,end\) \.3s infinite\}/)
+  assert.match(css, /@keyframes vsr-s1-sweep\{0%\{transform:translateX\(-100%\)\}66\.6667%,to\{transform:translateX\(100%\)\}\}/)
+  assert.doesNotMatch(css, /vsr-s1__badge|vsr-s1__progress|vsr-s1-breathe/)
   const reveal = css.match(/\.vsr-s1--fresh\{animation:vsr-s1-reveal \.(\d+)s/)
   assert.ok(reveal && Number(reveal[1]) >= 18 && Number(reveal[1]) <= 24, 'the reveal takes 180 to 240 ms')
   assert.doesNotMatch(css, /scale\(1\.0\d\)|vsr-s1-pop|vsr-s1-ring|vsr-s1-glow/, 'no bounce, no ring, no glow pulse')
-  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none!important/)
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none!important[^}]*\}\.vsr-s1__shim-deco\{display:none\}/)
 })

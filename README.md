@@ -8,8 +8,10 @@ agent orders, is the work really done, which team should get each of these 230 t
 
 - **System Two**, the LLM, plans and acts: `vllm-sr/auto` from [vLLM Semantic Router](https://github.com/vllm-project/semantic-router),
   which sends each step to the right open model.
-- **System One**, the decision model, decides: `vllm-sr/d3-ultra`. It answers typed questions (choice, yes/no, score,
-  box) with probabilities, from one forward pass per question instead of generated text.
+- **System One**, the decision models, decide: `vllm-sr/vela3-turbo` guards each call and checks the work, in one
+  request each, and `vllm-sr/d3-ultra` triages requests, screens tool results and runs the `system_one` tool. They
+  answer typed questions (choice, yes/no, score, box, spans) with probabilities, from one forward pass per question
+  instead of generated text.
 
 Both take a free [System Duo](https://app.vllm-sr.ai) key, which the plugin gets for you: System One answers at `https://app.vllm-sr.ai/v1/systemone`,
 and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
@@ -52,31 +54,49 @@ of your profile patch stay as they are.
 | Reflex | Hook | What System One answers | What happens |
 | --- | --- | --- | --- |
 | Triage | `agent/pre-step` | kind of work, effort, unclear?, risky? | a one-line brief joins the request, with hints (use `system_one` for batch work, ask first when unclear) |
-| Guard | `tools/pre-execute` | risk (Safe, Normal, Dangerous, Critical), leaks secrets?, on task? | the call runs, waits for your approval (Web UI), or is denied with the reason (headless) |
+| Guard | `tools/pre-execute` | risk (Safe, Normal, Dangerous, Critical), leaks secrets?, on task?, harmful? (router signals) | the call runs, waits for your approval (Web UI), or is denied with the reason (headless) |
 | Shield | `tools/post-execute` | does this passage give orders to an AI agent? | flagged passages are scored again line by line, and only the injected lines are removed |
-| Done-check | `agent/turn-stopping` | complete?, checked?, waiting for you? | an unfinished turn goes back once or twice to finish and verify |
+| Privacy | `tools/post-execute` | which words are personal data? | names, e-mail addresses, phone numbers and the like become `[LABEL]` before System Two reads them |
+| Done-check | `agent/turn-stopping` | complete?, checked?, waiting for you?, declined? (router signal) | an unfinished turn goes back once or twice to finish and verify |
 | Tool | `system_one` | any rubric the LLM writes, over a file of items or images | one result row per item (JSONL or CSV) and a summary |
 
-### Span answers (vllm-sr/vela3-turbo)
+### Span answers and router signals (vllm-sr/vela3-turbo)
 
-`vllm-sr/vela3-turbo` also answers span questions: which words of a text carry a label, with code-point offsets and a
-probability each. Once the Decision API lists `span` for it (`spans: auto`, the default), four reflexes point at words
-instead of whole passages:
+`vllm-sr/vela3-turbo` answers the decisions with its d3 base, and also span questions (which words of a text carry a
+label, with code-point offsets and a probability each) and the router's signals (the trained heads `vllm-sr/auto`'s
+router reads). Once the Decision API lists `span` for it (`spans: auto`, the default), every capability below is on:
 
+- **Guard**: one request answers the guard's questions, names the shell command that does the damage, and asks the
+  router's harm heads beside them: `p_harm` over the call, and `r_harm` over the request and the call as its answer.
+  A call they are sure is harmful (`r_harm` from 0.9) is asked about even when its risk is low, and a call the guard
+  asks about is denied when both are surer still (0.98).
 - **Shield**: in a passage it flagged, the sentences that give orders go, and the text around them stays. The passage
   is scored again without them, and a cut that leaves an injection behind falls back to removing lines.
-- **Guard**: a call it flags names the shell command that does the damage, in its card and its question.
-- **Done-check**: words of the final answer that nothing the turn read supports (preset `halu`) are marked, and
-  System Two goes back to re-verify just those.
-- **Privacy** (`privacy: true`, off by default): personal data in tool results (preset `pii`, 17 labels) becomes its
-  label, as `[EMAIL_ADDRESS]`, before System Two reads it: the nine sensitive labels by default (names, e-mail and
-  street addresses, phone, card, bank and ID numbers, IP addresses), while dates, organizations and places pass. A
-  small card shows what was masked, by label only.
+- **Done-check**: one request answers its questions, marks the words of the final answer that nothing the turn read
+  supports (preset `halu`), and asks `r_refusal`: System Two goes back to re-verify just those claims, and an answer
+  that declined (you rejected a step, or the request) is not pushed to carry on.
+- **Privacy** (on by default; `privacy: false` turns it off): personal data in tool results (preset `pii`, 17 labels)
+  becomes its label, as `[EMAIL_ADDRESS]`, before System Two reads it: the nine sensitive labels by default (names,
+  e-mail and street addresses, phone, card, bank and ID numbers, IP addresses), while dates, organizations and places
+  pass. A small card shows what was masked, by label only.
+
+The guard and the done-check asked `vllm-sr/d3-ultra` for the decision and `vllm-sr/vela3-turbo` for the words until
+0.5.1, because the d3 models answer no span questions. On our A/B sets the one request does as well or better:
+
+| Over the same cases | `d3-ultra` decides, `vela3-turbo` marks (until 0.5.1) | `vela3-turbo` alone, one request (0.5.2) |
+| --- | --- | --- |
+| Guard, 25 calls (the demo prompts, routine work, risky and destructive commands) | 48 of 50 right (2 runs), p50 929 ms | 75 of 75 right (3 runs), p50 641 ms |
+| Done-check, 10 turns | 18 of 20 right, p50 676 ms | 30 of 30 right, p50 630 ms |
+
+The router signals alone cannot replace the guard's questions: `r_harm` tells an allowed call from a flagged one but
+not a question from a block, and `attack` reads commands as prompts (it called `ls -la` a jailbreak). Beside the
+questions, they cost about 100 ms; `signals: false` leaves them out.
 
 ## See it in the Web UI
 
-In `dsh web`, System One shows up in the conversation itself, where it acted, marked with a blue **System One** badge
-(the blue of the vLLM logo) that carries the decision's latency:
+In `dsh web`, System One shows up in the conversation itself, where it acted, in a line drawn like the Web UI's own
+tool rows: an icon, **System One** in the blue of the vLLM logo, and the decision's latency (`182 ms`, or `1.4 s` from
+a second up):
 
 - **Triage**: a card under your request with the kind of work, the effort, how unclear and how risky it is, and the
   brief System Two was given.
@@ -94,9 +114,13 @@ In `dsh web`, System One shows up in the conversation itself, where it acted, ma
 
 Routine checks (an allowed call, a clean result) are one line and fold with the turn's work. Cards stay visible when
 the work folds, so a finished turn still shows what System One decided. Parallel calls in one step share one line or
-card. A decision that takes longer than a moment shows as **Deciding** until its answer takes its place, and every
-decision fades in once, the first time it appears (no motion with reduced motion). Each element shows the Decision
-API's own answer: the probabilities, the model (in bold, as `vllm-sr/d3-ultra`) and the measured latency.
+card. A decision that takes longer than a moment shows as **Deciding**, with the Web UI's own shimmer across its line,
+until its answer settles in its place; every card fades in once, the first time it appears (no motion with reduced
+motion). Every card keeps its blue frame: red marks only what System One stopped, inside it (a Dangerous level, the
+dangerous part of a command, a blocked call, removed text, your rejection), and amber what it asks (your approval, or
+System Two to go back). Each element shows the Decision API's own answer: the probabilities, the model that answered
+(one name, in bold, as `vllm-sr/vela3-turbo`; a second model, such as a span model, is named inside the card) and the
+measured latency.
 
 Set `systemOneUi` to `compact` for one line per decision, or to `off` to hide them.
 
@@ -111,34 +135,35 @@ attributes that say what it shows:
 | `data-system-one-reflex` | `triage`, `guard`, `shield`, `privacy`, `done`, `tool` or `key` |
 | `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; privacy `masked` or `clean`; done-check `stop` or `continue`; tool `running` or `done`; key `created` or `failed`; `deciding` while System One has not answered yet, `cancelled` when the turn stopped first; `error` when System One did not answer |
 | `data-system-one-outcome` | guard, once you answer its approval: `allowed`, `rejected`, `cancelled` or `failed` |
-| `data-system-one-why` | done-check: `complete`, `waiting`, `unfinished`, `unchecked` or `unsupported` |
-| `data-system-one-tone` | its colour: `ok` (green), `info` (blue), `warn` (amber), `bad` (red) or `muted` |
+| `data-system-one-why` | done-check: `complete`, `waiting`, `declined`, `unfinished`, `unchecked` or `unsupported` |
+| `data-system-one-tone` | the tone of what it decided: `ok` and `info` (blue), `warn` (amber: it asks you, or sends System Two back), `bad` (red: it blocked or removed something) or `muted`; a card's frame is blue whatever its tone |
 | `data-system-one-count` | how many decisions it holds (a batch: how many items) |
 | `data-system-one-turn`, `data-system-one-step` | where it acted (the step for guard and shield) |
 | `data-system-one-model` | the model that answered, as `vllm-sr/d3-ultra` |
 | `data-system-one-span-model`, `data-system-one-spans` | the span model that marked words, as `vllm-sr/vela3-turbo`, and how many |
 
-Inside a root, `data-system-one-part` marks `badge` (the blue **System One** pill), `latency`, `reflex`, `summary`,
-`model`, `head`, `toggle` (the button of a one-line element), `rows`, `verdict`, `outcome`, `subject`, `facts`,
-`note`, `more` and `progress` (the line that moves while it decides), in the batch row also `stack`, `legend`, `failed`, `results` and `raw`, and in the free-key line
-`badge` (the **System Duo** pill), `summary` and `links`. Span answers add `excerpts`, each `excerpt`, every marked
+Inside a root, `data-system-one-part` marks `icon` (the line's icon slot), `badge` (**System One**, in blue),
+`latency`, `reflex`, `summary`, `model`, `head`, `toggle` (the button of a one-line element), `rows`, `verdict`,
+`outcome`, `subject`, `facts`, `note`, `span-model` (a second model, named in a card's row), `more` and `progress` (the
+shimmer while it decides), in the batch row also `stack`, `legend`, `failed`, `results` and `raw`, and in the free-key
+line `icon`, `badge` (**System Duo**), `summary` and `links`. Span answers add `excerpts`, each `excerpt`, every marked
 `span` (with `data-system-one-span-label` and `data-system-one-probability`) and, in a Privacy card, the `labels`. Each
-number is a `data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (triage), `risk`, `leaks` and `on-task`
-(guard), `passages`, `injection` and `spans` (shield), `masked` (privacy), `complete`, `checked`, `waiting` and
-`unsupported` (done-check). Decision rows carry `data-system-one-decision` and `data-system-one-call`, batch questions
-`data-system-one-question`. For example:
+number is a `data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (triage), `risk`, `leaks`, `on-task`, and
+the router signals `harm` (the call) and `request-harm` (the request it serves) (guard), `passages`, `injection` and `spans` (shield), `masked` (privacy),
+`complete`, `checked`, `waiting`, the router signal `declined` and `unsupported` (done-check). Decision rows carry
+`data-system-one-decision` and `data-system-one-call`, batch questions `data-system-one-question`. For example:
 
 | Element | Selector |
 | --- | --- |
 | Triage card | `[data-system-one-reflex="triage"]` |
-| Guard card that asked you (amber) | `[data-system-one-reflex="guard"][data-system-one-verdict="ask"]` |
-| The same card once you rejected the call (red) | `[data-system-one-reflex="guard"][data-system-one-outcome="rejected"]` |
-| Injection removed (red) | `[data-system-one-reflex="shield"][data-system-one-verdict="removed"]` |
+| Guard card that asked you (its "Asked you" amber) | `[data-system-one-reflex="guard"][data-system-one-verdict="ask"]` |
+| The same card once you rejected the call (its "You rejected it" red) | `[data-system-one-reflex="guard"][data-system-one-outcome="rejected"]` |
+| Injection removed | `[data-system-one-reflex="shield"][data-system-one-verdict="removed"]` |
 | A routine check (one line) | `[data-system-one="compact"][data-system-one-reflex="guard"]`, and `"shield"` |
 | Done-check | `[data-system-one-reflex="done"]` |
 | Batch row, finished | `[data-system-one="tool"][data-system-one-verdict="done"]` |
-| The blue badge, and its latency | `[data-system-one-part="badge"]`, `[data-system-one-part="latency"]` |
-| System One still deciding | `[data-system-one-verdict="deciding"]`, and its `[data-system-one-part="progress"]` |
+| **System One** in blue, and its latency | `[data-system-one-part="badge"]`, `[data-system-one-part="latency"]` |
+| System One still deciding | `[data-system-one-verdict="deciding"]`, and its shimmer `[data-system-one-part="progress"]` |
 | "Dangerous", and "You rejected it" | `[data-system-one-fact="risk"]`, `[data-system-one-part="outcome"]` |
 | The reason | `[data-system-one-part="note"]` |
 | The model's name (bold) | `[data-system-one-part="model"]` |
@@ -151,7 +176,7 @@ number is a `data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (tri
 
 System One sends what it decides about: the user's request (clipped), each tool call it reviews, the passages of tool
 results it screens, the end of the turn (with what the turn read, for the done-check's span answer), and the items
-given to the `system_one` tool. With `privacy: true`, the results of `privacyTools` go to System One whole. System Two receives the
+given to the `system_one` tool. Privacy, on by default, sends the results of `privacyTools` to System One whole. System Two receives the
 conversation as any LLM provider does. System Duo logs requests to improve the services and to train models; read its
 [terms](https://app.vllm-sr.ai/terms) and [privacy](https://app.vllm-sr.ai/privacy) pages before you use it with
 private code or data. Each reflex can be turned off.
@@ -172,12 +197,18 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
 ```yaml
 - id: system-one
   config:
-    model: vllm-sr/d3-ultra        # vllm-sr/d3-flash is a little faster; d3-ultra is the most accurate
+    model: vllm-sr/d3-ultra        # triage, shield and the system_one tool; vllm-sr/d3-flash is a little faster
+    guardModel: vllm-sr/vela3-turbo  # the guard: its questions, router signals and the dangerous part in one request
+    doneModel: vllm-sr/vela3-turbo   # the done-check: its questions, unsupported claims and refusal in one request
     autoKeys: true                 # fetch the free System Duo key on first use
     guardAskMode: ask              # what a flagged call does: ask (wait for approval) or deny
     guardAskAt: 1.8                # risk score (0 Safe to 3 Critical) that asks
     guardDenyAt: 2.5               # risk score that always denies
     guardExfiltrationAt: 0.7       # "leaks secrets" probability that denies
+    signals: true                  # ask the router's safety signals beside the guard's and the done-check's questions
+    guardHarmAt: 0.9               # r_harm that asks about a call the questions allowed
+    guardHarmDenyAt: 0.98          # r_harm and p_harm, both this sure, deny a call the questions asked about
+    doneRefusalAt: 0.5             # r_refusal from which an answer that declined is not sent back
     guardTools: [bash, write, edit, apply_patch, web_fetch]
     shieldTools: [web_fetch, read, bash]
     triage: true
@@ -191,7 +222,7 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
     guardSpans: true               # name the dangerous part of a flagged call
     doneHalu: true                 # send unsupported claims back
     doneHaluAt: 0.6                # the lowest probability of an unsupported word that counts
-    privacy: false                 # mask personal data before System Two reads it
+    privacy: true                  # mask personal data before System Two reads it; false turns it off
     privacyAt: 0.5                 # the lowest probability of a personal-data span that is masked
     privacyLabels: [PERSON, EMAIL_ADDRESS, PHONE_NUMBER, STREET_ADDRESS, CREDIT_CARD, IBAN_CODE, US_SSN, US_DRIVER_LICENSE, IP_ADDRESS]
     privacyTools: [web_fetch, bash, read]
@@ -200,9 +231,11 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
 `systemOneUi` applies to decisions made after a restart with the new value; decisions already in a session keep the
 form they were recorded with. The tool's custom row is drawn for the default `toolName`, `system_one`.
 
-With `privacy: true`, System Two sees `[LABEL]` placeholders instead of personal data in the results of
+With privacy on (the default), System Two sees `[LABEL]` placeholders instead of personal data in the results of
 `privacyTools`, so it cannot copy a real value into a file it writes from what it read; it is told to ask you
-instead. Span records keep labels and offsets of personal data, never the data itself.
+instead. Span records keep labels and offsets of personal data, never the data itself. A guard or done-check model
+that answers no span questions (a d3 model) gets the questions over the text, and `spanModel` marks the words in a
+second request.
 
 The key comes from the credential reference `VLLM_SR_API_KEY` (`llmKeyEnv`), which both systems use. A separate
 System One key in `DECISION_API_KEY` (`apiKeyEnv`), as plugin 0.2 kept it, still wins for System One; a 0.2 key for
@@ -216,8 +249,9 @@ On our recorded runs, from one workstation with the network included:
 
 | What | Result |
 | --- | --- |
-| A decision | p50 0.49 s, p90 0.52 s (53 guard decisions) |
-| Guard | 35 of 36 right on our 36-command probe set: 16 of 16 risky commands stopped, 19 of 20 safe ones allowed |
+| A guard decision (`vllm-sr/vela3-turbo`, one request with its signals and the dangerous part) | p50 655 ms, p90 678 ms (36 commands) |
+| Guard | 35 of 36 right on our 36-command probe set: 16 of 16 risky commands stopped, 9 of 9 that must be denied denied, 19 of 20 safe ones allowed |
+| Guard and done-check, `vela3-turbo` alone against the `d3-ultra` split | see the A/B table under "Span answers and router signals" |
 | Shield | 22 of 22 right on our 22-passage probe set: 10 of 10 injections caught, 12 of 12 clean passages kept |
 | Triage of 230 tickets | 121 s and 117,877 LLM prompt tokens, against 543 s and at least 510,986 for the LLM alone |
 | UI screenshots | 5 of 5 broken screens found and boxed, no false alarms, 3.96 s for 12 |

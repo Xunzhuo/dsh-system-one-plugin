@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.2 (2026-11-04)
+
+System One's line looks and moves like the Web UI's own tool rows, every card stays blue, and the guard and the
+done-check ask one model, `vllm-sr/vela3-turbo`, in one request each.
+
+- **The System One line**: drawn as DeepSeek Harness draws a tool row: an icon in a 16 px slot, then **System One**
+  in blue (its one accent), the latency, the reflex and what it decided in the row's 13 px muted text, a dot between
+  each part. The pill badge is gone. A one-line element shows its chevron in the icon slot on hover and while open.
+  While System One decides, the Web UI's own shimmer sweeps across the line (none with reduced motion), and its answer
+  settles in the same place. The free-key line and the `system_one` row are drawn the same way.
+- **Latency** stays where it was and reads `182 ms` under a second, `1.4 s` from a second up, in Chat and in what
+  System Two is told.
+- **Cards**: every card keeps its blue frame, tint and accent bar, the Guard card included. Red marks only what System
+  One stopped, inside the card (a Dangerous or Critical level as a chip, the dangerous part of a command, a blocked
+  call, removed text, "You rejected it"), and amber what it asks (your approval, System Two to go back). Allowed and
+  done read blue, not green.
+- **One model name** in a card's head: the model that answered. A second one, a span model that marked the words, is
+  named in the card's rows (`[data-system-one-part="span-model"]`).
+- **Guard on `vllm-sr/vela3-turbo` alone** (`guardModel`): one request answers the guard's questions with the model's
+  d3 base, marks the dangerous part, and asks two of the router's safety signals: `p_harm` over the call and `r_harm`
+  over the request and the call as its answer. A call `r_harm` is sure is harmful (0.9, `guardHarmAt`) is asked about
+  even when its risk is low; one the guard asks about is denied when both signals are surer still (0.98,
+  `guardHarmDenyAt`). On our 25-call A/B set (the demo prompts, routine work, risky and destructive commands): 75 of 75
+  right over three runs, p50 641 ms, against 48 of 50 and p50 929 ms for `d3-ultra` deciding with `vela3-turbo`
+  marking; on the 36-command probe, 35 of 36 as before. New facts `harm` ("Harmful call") and `request-harm` ("Harmful request").
+- **Done-check on `vllm-sr/vela3-turbo` alone** (`doneModel`): one request answers its questions, marks the
+  unsupported claims and asks `r_refusal`; an answer that declined (you rejected a step, or the request) is not sent
+  back (`data-system-one-why="declined"`, fact `declined`, `doneRefusalAt`). On our 10 turns: 30 of 30 right over
+  three runs, p50 630 ms, against 18 of 20 and p50 676 ms. `signals: false` leaves the signals out (about 100 ms
+  less); a guard or done-check model that answers no span questions gets the questions over the text as before.
+- **Privacy is on by default**, as every capability is: `privacy: false` turns it off.
+
 ## 0.5.1 (2026-11-04)
 
 System One's elements in Chat take the blue of the vLLM logo and move more calmly.

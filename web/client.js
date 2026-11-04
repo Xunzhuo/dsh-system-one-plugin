@@ -58,6 +58,7 @@ window.__ModuleLoader__.load({
       const DONE = {
         complete: { label: 'Done', tone: 'ok' },
         waiting: { label: 'Waiting on you', tone: 'info' },
+        declined: { label: 'Declined', tone: 'info' },
         unfinished: { label: 'Sent back', tone: 'warn' },
         unchecked: { label: 'Sent back to verify', tone: 'warn' },
         unsupported: { label: 'Sent back to re-verify', tone: 'warn' },
@@ -65,7 +66,10 @@ window.__ModuleLoader__.load({
 
       const num = value => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
       const p2 = value => (num(value) === undefined ? '?' : value.toFixed(2))
-      const secs = ms => (num(ms) === undefined ? '' : `${(ms / 1000).toFixed(2)} s`)
+      // under a second in milliseconds (182 ms), from a second up in seconds (1.4 s)
+      const secs = ms => (num(ms) === undefined ? '' : Math.round(ms) < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`)
+      // the probability of one option of a choice answer, as the records keep it
+      const optionOf = (answer, option) => num(answer?.p?.[option])
       // System One's models are vllm-sr's; the name always shows its owner, whatever form the answer gave it in
       const fullModel = model => (typeof model === 'string' && model ? (model.includes('/') ? model : `vllm-sr/${model}`) : '')
       const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -190,7 +194,7 @@ window.__ModuleLoader__.load({
           headline: [`${kindLabel} work`, `${effortLabel.toLowerCase()} effort`, ...flags].join(' · '),
           facts: [
             { id: 'kind', label: 'Kind', value: `${kindLabel} ${p2(confidence)}`, bar: confidence },
-            { id: 'effort', label: 'Effort', value: effort === undefined ? '?' : `${effortLabel} · ${effort.toFixed(1)} of 3`, bar: effort === undefined ? undefined : effort / 3 },
+            { id: 'effort', label: 'Effort', value: effort === undefined ? '?' : `${effortLabel} · ${effort.toFixed(1)} of 3`, short: effort === undefined ? undefined : `${effortLabel} ${effort.toFixed(1)}`, bar: effort === undefined ? undefined : effort / 3 },
             { id: 'unclear', label: 'Unclear', value: p2(unclear), bar: unclear, tone: unclear >= 0.6 ? 'warn' : undefined },
             { id: 'risky', label: 'Risky', value: p2(risky), bar: risky, tone: risky >= 0.5 ? 'bad' : undefined },
           ],
@@ -211,10 +215,19 @@ window.__ModuleLoader__.load({
         const risk = scoreOf(a.risk)
         const leaks = yesOf(a.exfiltration)
         const onTask = yesOf(a.on_task)
+        // vllm-sr/vela3-turbo's router safety heads: is the call itself harmful, and is the request it serves
+        const harm = optionOf(a.r_harm, 'unsafe response')
+        const unsafe = optionOf(a.p_harm, 'unsafe')
         const facts = []
-        if (risk !== undefined) facts.push({ id: 'risk', label: 'Risk', value: `${level(RISK, Math.min(3, risk))} · ${risk.toFixed(2)} of 3`, bar: risk / 3, tone: risk >= 2.5 ? 'bad' : risk >= 1.8 ? 'warn' : 'ok' })
+        if (risk !== undefined) {
+          const named = level(RISK, Math.min(3, risk))
+          const dangerous = risk >= 1.8
+          facts.push({ id: 'risk', label: 'Risk', value: `${named} · ${risk.toFixed(2)} of 3`, short: `${named} ${risk.toFixed(2)}`, chip: dangerous ? named : undefined, chipTone: 'bad', bar: risk / 3 })
+        }
         if (leaks !== undefined) facts.push({ id: 'leaks', label: 'Leaks secrets', value: p2(leaks), bar: leaks, tone: leaks >= 0.7 ? 'bad' : undefined })
-        if (onTask !== undefined) facts.push({ id: 'on-task', label: 'On task', value: p2(onTask), bar: onTask, tone: onTask < 0.15 ? 'warn' : undefined })
+        if (onTask !== undefined) facts.push({ id: 'on-task', label: 'On task', value: p2(onTask), bar: onTask })
+        if (harm !== undefined) facts.push({ id: 'harm', label: 'Harmful call', value: p2(harm), bar: harm })
+        if (unsafe !== undefined) facts.push({ id: 'request-harm', label: 'Harmful request', value: p2(unsafe), bar: unsafe })
         const danger = Array.isArray(row.danger) ? row.danger.filter(span => typeof span?.text === 'string' && span.text) : []
         return {
           verdict: row.verdict, ...verdict, subject: danger.length ? { ...subject, marks: danger, kind: 'dangerous' } : subject, facts, outcome, outcomeKey: outcome ? row.outcome : undefined, verdictTone: verdict.tone,
@@ -233,7 +246,7 @@ window.__ModuleLoader__.load({
           verdict: row.verdict, ...verdict, subject: { tool: row.tool, text: row.call },
           facts: [
             { id: 'passages', label: 'Passages', value: String(num(row.passages) ?? '?') },
-            { id: 'injection', label: 'Injection', value: p2(row.maxP), bar: num(row.maxP), tone: row.maxP >= 0.5 ? 'bad' : 'ok' },
+            { id: 'injection', label: 'Injection', value: p2(row.maxP), bar: num(row.maxP), tone: row.maxP >= 0.5 ? 'bad' : undefined },
             ...(spans ? [{ id: 'spans', label: 'Spans removed', value: String(spans) }] : []),
           ],
           excerpts: Array.isArray(row.excerpts) ? { list: row.excerpts, kind: 'removed' } : undefined,
@@ -267,20 +280,23 @@ window.__ModuleLoader__.load({
         const verdict = DONE[why]
         const round = `${num(row.steers) ?? '?'} of ${num(row.maxSteers) ?? '?'}`
         const unsupported = num(row.unsupported) ?? 0
+        const declined = optionOf(a.r_refusal, 'refusal')
         return {
           verdict: row.verdict === 'continue' ? 'continue' : 'stop', ...verdict, why, short: verdict.label.toLowerCase(),
-          headline: row.verdict === 'continue' ? `${verdict.label} to System Two (${round})` : why === 'waiting' ? 'Waiting on you' : 'The work is done',
+          headline: row.verdict === 'continue' ? `${verdict.label} to System Two (${round})` : why === 'waiting' ? 'Waiting on you' : why === 'declined' ? 'System Two declined' : 'The work is done',
           facts: [
-            { id: 'complete', label: 'Complete', value: p2(yesOf(a.complete)), bar: yesOf(a.complete), tone: yesOf(a.complete) < 0.5 ? 'warn' : 'ok' },
+            { id: 'complete', label: 'Complete', value: p2(yesOf(a.complete)), bar: yesOf(a.complete) },
             { id: 'checked', label: 'Checked', value: p2(yesOf(a.checked)), bar: yesOf(a.checked) },
             { id: 'waiting', label: 'Waiting on you', value: p2(yesOf(a.waiting)), bar: yesOf(a.waiting) },
-            ...(row.spanModel ? [{ id: 'unsupported', label: 'Unsupported', value: String(unsupported), tone: unsupported ? 'warn' : 'ok' }] : []),
+            ...(declined === undefined ? [] : [{ id: 'declined', label: 'Declined', value: p2(declined), bar: declined }]),
+            ...(row.spanModel ? [{ id: 'unsupported', label: 'Unsupported', value: String(unsupported), tone: unsupported ? 'warn' : undefined }] : []),
           ],
           excerpts: unsupported && Array.isArray(row.excerpts) ? { list: row.excerpts, kind: 'unsupported' } : undefined,
           note: why === 'unfinished' ? `Not finished yet, so System Two goes back to work (${round}).`
             : why === 'unchecked' ? `The changes were not checked, so System Two goes back to verify them (${round}).`
               : why === 'unsupported' ? `Nothing System Two read supports ${plural(unsupported, 'claim')} in its answer, so it goes back to re-verify just ${unsupported === 1 ? 'that one' : 'those'} (${round}).`
-                : unsupported ? `Nothing System Two read supports ${plural(unsupported, 'claim')} in its answer.` : undefined,
+                : why === 'declined' ? 'System Two declined or was refused, so System One did not send it back.'
+                  : unsupported ? `Nothing System Two read supports ${plural(unsupported, 'claim')} in its answer.` : undefined,
         }
       }
 
@@ -326,16 +342,16 @@ window.__ModuleLoader__.load({
         return [plural(views.length, noun), ...[...counts].map(([short, n]) => `${n} ${short}`)].join(' · ')
       }
 
-      // one line: the verdict, then what it was about and its leading number
+      // one line: the verdict, then what it was about and its leading number, each a part of the row
       function compactLine(view) {
         const label = view.outcome ? `${view.label} → ${view.outcome.label}` : view.label
         const rest = []
         if (view.detail) rest.push(view.detail)
         if (view.subject?.text) rest.push(`${view.subject.tool ?? ''} ${view.subject.text}`.trim())
         const lead = view.facts.find(fact => ['risk', 'injection', 'complete', 'effort', 'masked'].includes(fact.id))
-        if (lead) rest.push(`${lead.label.toLowerCase()} ${lead.value}`)
+        if (lead) rest.push(`${lead.label.toLowerCase()} ${lead.short ?? lead.value}`)
         if (view.error) rest.push(view.error)
-        return { label, tone: view.tone, rest: rest.join(' · ') }
+        return { label, tone: view.tone, rest }
       }
 
       // ---- drawing ----
@@ -370,17 +386,68 @@ window.__ModuleLoader__.load({
         }
       }
 
-      function Badge({ id, ms, time }) {
-        const fresh = useFresh(`badge:${id}`, time)
-        return h('span', { className: cx('vsr-s1__badge', fresh && 'vsr-s1__badge--fresh'), 'data-system-one-part': 'badge' },
-          h('i', { className: 'vsr-s1__dot', 'aria-hidden': true }),
-          h('span', { className: 'vsr-s1__name' }, 'System One'),
-          secs(ms) ? h('span', { className: 'vsr-s1__ms', 'data-system-one-part': 'latency' }, secs(ms)) : null)
+      // A System One line is drawn as DeepSeek Harness draws a tool row: an icon in a 16 px slot, then its parts in the
+      // row's muted text with a dot between each, and "System One" in blue as its only accent. While System One decides,
+      // a band of light sweeps across the line, as it does across a running tool's row.
+      function Bolt() {
+        return h('svg', { className: 'vsr-s1__bolt', viewBox: '0 0 16 16', width: 14, height: 14, 'aria-hidden': true },
+          h('path', { d: 'M9.4 1.6 3.6 9h4.1l-1.1 5.4L12.4 7H8.3l1.1-5.4Z', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinejoin: 'round' }))
       }
 
-      function Model({ model, also }) {
-        const names = [...new Set([fullModel(model), fullModel(also)].filter(Boolean))]
-        return names.length ? h('b', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: names.join(' + ') }, names.join(' + ')) : null
+      // the icon slot; a row that opens shows its chevron there on hover, and while open
+      function Lead({ glyph, toggles }) {
+        return h('span', { className: 'vsr-s1__lead', 'data-system-one-part': 'icon', 'aria-hidden': true },
+          h('span', { className: 'vsr-s1__icon' }, glyph ?? h(Bolt)),
+          toggles ? h(Chevron) : null)
+      }
+
+      // the parts of a row, with a dot between each
+      function joined(list) {
+        const out = []
+        for (const part of list.filter(Boolean)) {
+          if (out.length) out.push(h('i', { className: 'vsr-s1__sep', 'aria-hidden': true }))
+          out.push(part)
+        }
+        return out
+      }
+
+      // `marked` puts the selectors on the parts; the shimmer's copy of the line goes without them
+      const nameOf = (marked, name = 'System One') => h('b', { className: 'vsr-s1__name', 'data-system-one-part': marked ? 'badge' : undefined }, name)
+      const latencyOf = (marked, ms) => (secs(ms) ? h('span', { className: 'vsr-s1__ms', 'data-system-one-part': marked ? 'latency' : undefined }, secs(ms)) : null)
+      const reflexOf = (marked, reflex) => h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': marked ? 'reflex' : undefined }, reflex)
+
+      // DeepSeek Harness's row shimmer: a copy of the line in the shimmer colour, seen through a window that sweeps across
+      function Shimmer({ active, line }) {
+        return h('span', { className: 'vsr-s1__shim', 'data-shimmer': active || undefined },
+          h('span', { className: 'vsr-s1__shim-line' }, ...line(true)),
+          active ? h('span', { className: 'vsr-s1__shim-deco', 'data-system-one-part': 'progress', 'aria-hidden': true },
+            h('span', { className: 'vsr-s1__shim-sweep' }, h('span', { className: 'vsr-s1__shim-line vsr-s1__shim-copy' }, ...line(false)))) : null)
+      }
+
+      // a line that said deciding and now has its answer settles once, in place
+      const waitedOn = new Map()
+      function settles(row) {
+        const id = row?.decision
+        if (typeof id !== 'string') return false
+        if (row.pending) {
+          if (waitedOn.size > 2000) waitedOn.clear()
+          waitedOn.set(id, 0)
+          return false
+        }
+        const since = waitedOn.get(id)
+        if (since === undefined) return false
+        if (since === 0) waitedOn.set(id, Date.now())
+        else if (Date.now() - since > 1500) {
+          waitedOn.delete(id)
+          return false
+        }
+        return true
+      }
+
+      // one name: the model that answered; another one (the span model, when it differs) is named in the rows
+      function Model({ model }) {
+        const name = fullModel(model)
+        return name ? h('b', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: name }, name) : null
       }
 
       // what a span model marked: removed injections, masked personal data (only its label), unsupported claims
@@ -419,11 +486,13 @@ window.__ModuleLoader__.load({
         return h('span', { className: cx('vsr-s1__pill', `vsr-s1__pill--${tone}`, arrow && 'vsr-s1__pill--then'), 'data-system-one-part': part }, children)
       }
 
-      function Fact({ id, label, value, bar, tone }) {
+      function Fact({ id, label, value, bar, tone, chip, chipTone }) {
+        // a level worth a warning ("Dangerous") is a chip in its tone, the rest of the value beside it
+        const rest = chip && value.startsWith(chip) ? value.slice(chip.length) : undefined
         return h('span', { className: 'vsr-s1__fact', 'data-system-one-fact': id },
           h('span', { className: 'vsr-s1__fact-label' }, label),
           num(bar) === undefined ? null : h('span', { className: cx('vsr-s1__bar', tone && `vsr-s1__bar--${tone}`), style: { '--p': clamp01(bar) }, 'aria-hidden': true }, h('i')),
-          h('b', null, value))
+          rest === undefined ? h('b', null, value) : h('b', null, h('span', { className: cx('vsr-s1__level', `vsr-s1__level--${chipTone ?? tone}`) }, chip), rest))
       }
 
       function Row({ row, view, single, index = 0 }) {
@@ -447,7 +516,9 @@ window.__ModuleLoader__.load({
           view.facts.length ? h('div', { className: 'vsr-s1__facts', 'data-system-one-part': 'facts' }, view.facts.map(fact => h(Fact, { key: fact.id, ...fact }))) : null,
           view.labels?.length ? h('div', { className: 'vsr-s1__labels', 'data-system-one-part': 'labels' }, view.labels.map(entry => h('span', { key: entry.label, className: 'vsr-s1__label', 'data-system-one-span-label': entry.label }, entry.label, h('b', null, String(entry.n))))) : null,
           view.excerpts?.list?.length ? h(Excerpts, { excerpts: view.excerpts }) : null,
-          view.note ? h('div', { className: 'vsr-s1__note', 'data-system-one-part': 'note' }, view.note) : null),
+          view.note ? h('div', { className: 'vsr-s1__note', 'data-system-one-part': 'note' }, view.note) : null,
+          fullModel(row.spanModel) && fullModel(row.spanModel) !== fullModel(row.model)
+            ? h('div', { className: 'vsr-s1__note', 'data-system-one-part': 'span-model' }, 'Spans by ', h('b', { className: 'vsr-s1__by' }, fullModel(row.spanModel)), secs(row.spanMs) ? ` · ${secs(row.spanMs)}` : '') : null),
         !single && secs(row.ms) ? h('span', { className: 'vsr-s1__rowms', 'data-system-one-part': 'latency' }, secs(row.ms)) : null)
       }
 
@@ -500,10 +571,14 @@ window.__ModuleLoader__.load({
         },
         h('span', { className: 'vsr-s1__sheen', 'aria-hidden': true }),
         h('div', { className: 'vsr-s1__head', 'data-system-one-part': 'head' },
-          h(Badge, { key: idOf(last), id: idOf(last), ms: last.ms, time: last.time }),
-          h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, reflex),
-          h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
-          h(Model, { model: last.model, also: state.rows.find(row => row.spanModel)?.spanModel })),
+          h(Lead, {}),
+          ...joined([
+            nameOf(true),
+            latencyOf(true, last.ms),
+            reflexOf(true, reflex),
+            h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+          ]),
+          h(Model, { model: last.model })),
         h(Rows, { reflex: state.reflex, rows: state.rows, views }))
       }
 
@@ -519,25 +594,31 @@ window.__ModuleLoader__.load({
         const [open, setOpen] = React.useState(false)
         const fresh = useFresh(`card:${idOf(state.rows[0])}`, state.rows[0].time)
         const reflex = REFLEX[state.reflex] ?? state.reflex
-        const line = views.length === 1 ? compactLine(views[0]) : { label: headlineOf(state.reflex, views), tone: undefined, rest: '' }
-        const said = line.rest ? `${line.label} · ${line.rest}` : line.label
+        const line = views.length === 1 ? compactLine(views[0]) : { label: headlineOf(state.reflex, views), tone: undefined, rest: [] }
+        const said = [line.label, ...line.rest].join(' · ')
         const deciding = views.some(view => view.pending)
+        const settled = state.rows.map(settles).some(Boolean)
+        const parts = marked => joined([
+          nameOf(marked),
+          deciding ? null : latencyOf(marked, last.ms),
+          reflexOf(marked, reflex),
+          h('span', { className: 'vsr-s1__summary', 'data-system-one-part': marked ? 'summary' : undefined, title: marked ? said : undefined },
+            ...joined([
+              h('span', { className: cx('vsr-s1__verdict', line.tone && `vsr-s1__verdict--${line.tone}`), 'data-system-one-part': marked ? 'verdict' : undefined }, line.label),
+              ...line.rest,
+            ])),
+        ])
         return h('div', {
-          className: cx('vsr-s1', 'vsr-s1--compact', `vsr-s1--${worst.tone}`, open && 'vsr-s1--open', fresh && 'vsr-s1--fresh', deciding && 'vsr-s1--deciding'),
+          className: cx('vsr-s1', 'vsr-s1--compact', `vsr-s1--${worst.tone}`, open && 'vsr-s1--open', fresh && 'vsr-s1--fresh', deciding && 'vsr-s1--deciding', settled && 'vsr-s1--settle'),
           role: 'group',
           'aria-label': `System One ${reflex}: ${said}`,
           'aria-busy': deciding || undefined,
           ...attributes('compact', state, deciding ? views.find(view => view.pending) : worst),
         },
         h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
-          h(Badge, { key: idOf(last), id: idOf(last), ms: deciding ? undefined : last.ms, time: last.time }),
-          h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, reflex),
-          h('span', { className: cx('vsr-s1__summary', deciding && 'vsr-s1__shimmer'), 'data-system-one-part': 'summary', title: said },
-            h('span', { className: cx('vsr-s1__verdict', line.tone && `vsr-s1__verdict--${line.tone}`), 'data-system-one-part': 'verdict' }, line.label),
-            line.rest ? ` · ${line.rest}` : null),
-          open && !deciding ? h(Model, { model: last.model, also: state.rows.find(row => row.spanModel)?.spanModel }) : null,
-          h(Chevron)),
-        deciding ? h('span', { className: 'vsr-s1__progress', 'data-system-one-part': 'progress', 'aria-hidden': true }) : null,
+          h(Lead, { toggles: true }),
+          h(Shimmer, { active: deciding, line: parts }),
+          open && !deciding ? h(Model, { model: last.model }) : null),
         open ? h(Rows, { reflex: state.reflex, rows: state.rows, views }) : null)
       }
 
@@ -567,9 +648,12 @@ window.__ModuleLoader__.load({
           'data-system-one-tone': created ? 'ok' : 'bad',
           'data-system-one-turn': whole(row.turn),
         },
-        h('span', { className: cx('vsr-s1__duo', fresh && 'vsr-s1__badge--fresh'), 'data-system-one-part': 'badge' }, h(KeyGlyph), 'System Duo'),
-        h('span', { className: cx('vsr-s1__summary', !created && 'vsr-s1__summary--bad'), 'data-system-one-part': 'summary', title: said }, said),
-        created && (row.terms || row.privacy) ? h('span', { className: 'vsr-s1__links', 'data-system-one-part': 'links' }, link(row.terms, 'Terms'), link(row.privacy, 'Privacy')) : null)
+        h(Lead, { glyph: h(KeyGlyph) }),
+        ...joined([
+          nameOf(true, 'System Duo'),
+          h('span', { className: cx('vsr-s1__summary', !created && 'vsr-s1__summary--bad'), 'data-system-one-part': 'summary', title: said }, said),
+          created && (row.terms || row.privacy) ? h('span', { className: 'vsr-s1__links', 'data-system-one-part': 'links' }, link(row.terms, 'Terms'), link(row.privacy, 'Privacy')) : null,
+        ]))
       }
 
       // A routine check (an allowed call, a clean result) is one line in either mode; a decision that changed
@@ -686,10 +770,11 @@ window.__ModuleLoader__.load({
           const line = phase === 'preparing' ? 'Preparing a batch' : `Answering ${plural(asked, 'question')}${source ? ` over ${source}` : ''}`
           return h('div', { className: 'vsr-s1 vsr-s1--compact vsr-s1--running vsr-s1--deciding', 'aria-busy': true, 'data-system-one': 'tool', ...common, 'data-system-one-verdict': 'running', 'data-system-one-tone': 'info' },
             h('div', { className: 'vsr-s1__chip vsr-s1__chip--static' },
-              h(Badge, { id: `${callId}:running`, time: Date.now() }),
-              h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
-              h('span', { className: 'vsr-s1__summary vsr-s1__shimmer', 'data-system-one-part': 'summary' }, line)),
-            h('span', { className: 'vsr-s1__progress', 'data-system-one-part': 'progress', 'aria-hidden': true }))
+              h(Lead, {}),
+              h(Shimmer, {
+                active: true,
+                line: marked => joined([nameOf(marked), reflexOf(marked, REFLEX.tool), h('span', { className: 'vsr-s1__summary', 'data-system-one-part': marked ? 'summary' : undefined }, line)]),
+              })))
         }
 
         if (block?.isError || !meta || ui === 'off') {
@@ -700,9 +785,11 @@ window.__ModuleLoader__.load({
             'data-system-one': 'tool', ...common, 'data-system-one-verdict': block?.isError ? 'error' : 'done', 'data-system-one-tone': block?.isError ? 'bad' : 'muted',
           },
           h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
-            h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, 'System One'),
-            h('span', { className: cx('vsr-s1__summary', block?.isError && 'vsr-s1__summary--bad'), 'data-system-one-part': 'summary', title: first }, first),
-            h(Chevron)),
+            h(Lead, { toggles: true }),
+            ...joined([
+              nameOf(true),
+              h('span', { className: cx('vsr-s1__summary', block?.isError && 'vsr-s1__summary--bad'), 'data-system-one-part': 'summary', title: first }, first),
+            ])),
           open ? h('pre', { className: 'vsr-s1__raw', 'data-system-one-part': 'raw' }, body) : null)
         }
 
@@ -715,11 +802,14 @@ window.__ModuleLoader__.load({
         if (ui === 'compact') {
           return h('div', { className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--ok', open && 'vsr-s1--open', fresh && 'vsr-s1--fresh'), 'data-system-one': 'tool', ...done },
             h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
-              h(Badge, { id: `${callId}:done`, ms, time: block?.time }),
-              h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
-              h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
-              open ? h(Model, { model: meta.model }) : null,
-              h(Chevron)),
+              h(Lead, { toggles: true }),
+              ...joined([
+                nameOf(true),
+                latencyOf(true, ms),
+                reflexOf(true, REFLEX.tool),
+                h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+              ]),
+              open ? h(Model, { model: meta.model }) : null),
             open ? h(ToolBody, { meta, fresh, cwd, openFile }) : null)
         }
         return h('section', {
@@ -731,9 +821,13 @@ window.__ModuleLoader__.load({
         },
         h('span', { className: 'vsr-s1__sheen', 'aria-hidden': true }),
         h('div', { className: 'vsr-s1__head', 'data-system-one-part': 'head' },
-          h(Badge, { id: `${callId}:done`, ms, time: block?.time }),
-          h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
-          h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+          h(Lead, {}),
+          ...joined([
+            nameOf(true),
+            latencyOf(true, ms),
+            reflexOf(true, REFLEX.tool),
+            h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+          ]),
           h(Model, { model: meta.model })),
         h(ToolBody, { meta, fresh, cwd, openFile }))
       }
@@ -745,41 +839,46 @@ window.__ModuleLoader__.load({
       // ---- styles: the Web UI's theme tokens, with the blue of the vLLM logo (#30A2FF) for System One ----
 
       const CSS = `
-.vsr-s1{--vsr-s1-blue:#30A2FF;--vsr-s1-blue-soft:#7CC4FF;--vsr-s1-blue-deep:#1E7FE0;--vsr-s1-ink:#166BC9;--vsr-s1-badge-a:#2290F0;--vsr-s1-badge-b:#135CB8;--vsr-s1-tint:6%;--vsr-s1-tint-2:1.5%;--vsr-s1-edge:24%;--vsr-s1-lift:rgba(16,42,84,.05);--vsr-s1-ok:var(--dsw-alias-state-success-primary,#1F9D5B);--vsr-s1-warn:var(--dsw-alias-state-warn-primary,#E8A100);--vsr-s1-bad:var(--dsw-alias-state-error-primary,#E5484D);--vsr-s1-text:var(--dsw-alias-label-primary,#1F2329);--vsr-s1-text-2:var(--dsw-alias-label-secondary,#545961);--vsr-s1-text-3:var(--dsw-alias-label-tertiary,#8A8F98);--vsr-s1-line:var(--dsw-alias-border-l2,rgba(127,127,127,.22));--vsr-s1-track:color-mix(in srgb,var(--vsr-s1-text-3) 26%,transparent);--vsr-s1-mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;--vsr-s1-ease:cubic-bezier(.22,1,.36,1);position:relative;box-sizing:border-box;width:100%;margin:6px 0;color:var(--vsr-s1-text);font-size:13.5px;line-height:1.45;text-align:left}
-body[data-ds-dark-theme] .vsr-s1{--vsr-s1-blue-soft:#4DB0FF;--vsr-s1-ink:#6BBEFF;--vsr-s1-badge-a:#2A98F5;--vsr-s1-badge-b:#1667C9;--vsr-s1-tint:9%;--vsr-s1-tint-2:3%;--vsr-s1-edge:32%;--vsr-s1-lift:rgba(0,0,0,.28)}
+.vsr-s1{--vsr-s1-blue:#30A2FF;--vsr-s1-blue-soft:#7CC4FF;--vsr-s1-blue-deep:#1E7FE0;--vsr-s1-ink:#166BC9;--vsr-s1-tint:6%;--vsr-s1-tint-2:1.5%;--vsr-s1-edge:24%;--vsr-s1-lift:rgba(16,42,84,.05);--vsr-s1-warn:var(--dsw-alias-state-warn-primary,#E8A100);--vsr-s1-bad:var(--dsw-alias-state-error-primary,#E5484D);--vsr-s1-text:var(--dsw-alias-label-primary,#1F2329);--vsr-s1-text-2:var(--dsw-alias-label-secondary,#545961);--vsr-s1-text-3:var(--dsw-alias-label-tertiary,#8A8F98);--vsr-s1-row:var(--dsw-alias-label-tertiary,#81858C);--vsr-s1-row-hover:var(--dsw-alias-label-secondary,#61666B);--vsr-s1-dot:var(--dsw-alias-label-caption,#ADB2B8);--vsr-s1-glint:var(--dsw-alias-label-shimmer,rgba(15,17,21,.3));--vsr-s1-row-size:var(--dsh-content-font-size-secondary,13px);--vsr-s1-line:var(--dsw-alias-border-l2,rgba(127,127,127,.22));--vsr-s1-track:color-mix(in srgb,var(--vsr-s1-text-3) 26%,transparent);--vsr-s1-mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;--vsr-s1-ease:cubic-bezier(.22,1,.36,1);position:relative;box-sizing:border-box;width:100%;margin:6px 0;color:var(--vsr-s1-text);font-size:13.5px;line-height:1.45;text-align:left}
+body[data-ds-dark-theme] .vsr-s1{--vsr-s1-blue-soft:#4DB0FF;--vsr-s1-ink:#6BBEFF;--vsr-s1-tint:9%;--vsr-s1-tint-2:3%;--vsr-s1-edge:32%;--vsr-s1-lift:rgba(0,0,0,.28)}
 .vsr-s1 *{box-sizing:border-box}
-.vsr-s1--card{--vsr-s1-tone:var(--vsr-s1-blue);padding:11px 14px 12px 17px;border:1px solid color-mix(in srgb,var(--vsr-s1-tone) var(--vsr-s1-edge),var(--vsr-s1-line));border-radius:12px;background:linear-gradient(180deg,color-mix(in srgb,var(--vsr-s1-tone) var(--vsr-s1-tint),transparent),color-mix(in srgb,var(--vsr-s1-tone) var(--vsr-s1-tint-2),transparent));box-shadow:0 1px 2px var(--vsr-s1-lift),0 10px 24px -16px color-mix(in srgb,var(--vsr-s1-tone) 55%,transparent)}
-.vsr-s1--card.vsr-s1--bad{--vsr-s1-tone:var(--vsr-s1-bad);--vsr-s1-edge:44%}
-.vsr-s1--card.vsr-s1--warn{--vsr-s1-tone:var(--vsr-s1-warn);--vsr-s1-edge:46%}
+.vsr-s1--card{padding:8px 14px 12px 15px;border:1px solid color-mix(in srgb,var(--vsr-s1-blue) var(--vsr-s1-edge),var(--vsr-s1-line));border-radius:12px;background:linear-gradient(180deg,color-mix(in srgb,var(--vsr-s1-blue) var(--vsr-s1-tint),transparent),color-mix(in srgb,var(--vsr-s1-blue) var(--vsr-s1-tint-2),transparent));box-shadow:0 1px 2px var(--vsr-s1-lift),0 10px 24px -16px color-mix(in srgb,var(--vsr-s1-blue) 55%,transparent)}
 .vsr-s1__sheen{position:absolute;inset:0;border-radius:inherit;overflow:hidden;pointer-events:none}
 .vsr-s1__sheen::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--vsr-s1-blue-soft),var(--vsr-s1-blue) 45%,var(--vsr-s1-blue-deep));transform-origin:top center}
-.vsr-s1--bad>.vsr-s1__sheen::before{background:var(--vsr-s1-bad)}
-.vsr-s1--warn>.vsr-s1__sheen::before{background:var(--vsr-s1-warn)}
-.vsr-s1__head{position:relative;display:flex;align-items:center;gap:9px;min-width:0}
-.vsr-s1__badge{position:relative;display:inline-flex;flex:none;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border-radius:999px;color:#fff;font-size:12px;font-weight:650;letter-spacing:-.005em;white-space:nowrap;background:linear-gradient(135deg,var(--vsr-s1-badge-a),var(--vsr-s1-badge-b));box-shadow:0 1px 2px color-mix(in srgb,var(--vsr-s1-badge-b) 35%,transparent),inset 0 1px 0 rgba(255,255,255,.26),inset 0 0 0 .5px rgba(255,255,255,.14)}
-.vsr-s1__dot{flex:none;width:6px;height:6px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.2)}
-.vsr-s1__ms{padding-left:7px;border-left:1px solid rgba(255,255,255,.42);font-weight:750;font-variant-numeric:tabular-nums}
-.vsr-s1__reflex{flex:none;font-weight:650;color:var(--vsr-s1-text);white-space:nowrap}
-.vsr-s1__summary{flex:1;min-width:0;overflow:hidden;color:var(--vsr-s1-text-2);white-space:nowrap;text-overflow:ellipsis}
+.vsr-s1__head,.vsr-s1__chip,.vsr-s1--notice{display:flex;align-items:center;min-width:0;color:var(--vsr-s1-row);font-size:var(--vsr-s1-row-size);font-weight:400;line-height:24px}
+.vsr-s1__head{position:relative;height:24px}
+.vsr-s1__lead{position:relative;display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;margin-right:6px;color:inherit}
+.vsr-s1__lead svg{width:14px;height:14px}
+.vsr-s1__icon{display:inline-flex;transition:opacity .1s ease}
+.vsr-s1__lead>.vsr-s1__chev{position:absolute;inset:0;margin:auto;opacity:0;transition:opacity .1s ease,transform .2s var(--vsr-s1-ease)}
+.vsr-s1__chip:hover .vsr-s1__icon,.vsr-s1--open>.vsr-s1__chip .vsr-s1__icon{opacity:0}
+.vsr-s1__chip:hover .vsr-s1__lead>.vsr-s1__chev,.vsr-s1--open>.vsr-s1__chip .vsr-s1__lead>.vsr-s1__chev{opacity:1}
+.vsr-s1--open>.vsr-s1__chip .vsr-s1__chev{transform:rotate(90deg)}
+.vsr-s1__name{flex:none;color:var(--vsr-s1-ink);font-weight:650;letter-spacing:-.005em;white-space:nowrap}
+.vsr-s1__sep{display:inline-block;flex:none;width:2px;height:2px;margin:0 8px;border-radius:1px;background:var(--vsr-s1-dot);vertical-align:middle}
+.vsr-s1__ms{flex:none;font-variant-numeric:tabular-nums;white-space:nowrap}
+.vsr-s1__reflex{flex:none;font-weight:500;white-space:nowrap}
+.vsr-s1__summary{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .vsr-s1__summary--bad{color:var(--vsr-s1-bad)}
-.vsr-s1__verdict{font-weight:600;color:var(--vsr-s1-text)}
-.vsr-s1__verdict--ok{color:var(--vsr-s1-ok)}.vsr-s1__verdict--warn{color:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__verdict--bad{color:var(--vsr-s1-bad)}.vsr-s1__verdict--info{color:var(--vsr-s1-ink)}.vsr-s1__verdict--muted{color:var(--vsr-s1-text-3)}
-.vsr-s1__model{flex:none;color:var(--vsr-s1-text-2);font-size:12px;font-weight:700;letter-spacing:-.005em;white-space:nowrap}
-.vsr-s1--notice{display:flex;align-items:center;gap:9px;min-width:0;margin:4px 0;padding:3px 0}
+.vsr-s1__verdict{font-weight:500;color:var(--vsr-s1-text-2)}
+.vsr-s1__verdict--warn{color:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__verdict--bad{color:var(--vsr-s1-bad)}.vsr-s1__verdict--muted{color:inherit;font-weight:400}
+.vsr-s1__model{flex:none;margin-left:12px;color:var(--vsr-s1-text-2);font-size:12px;font-weight:700;letter-spacing:-.005em;white-space:nowrap}
+.vsr-s1__by{color:var(--vsr-s1-text-2);font-weight:700}
+.vsr-s1--notice{align-items:flex-start;margin:4px 0}
+.vsr-s1--notice .vsr-s1__lead{margin-top:4px}
+.vsr-s1--notice .vsr-s1__sep{margin-top:11px}
 .vsr-s1--notice .vsr-s1__summary{white-space:normal}
-.vsr-s1__duo{position:relative;display:inline-flex;flex:none;align-items:center;gap:5px;height:22px;padding:0 9px 0 8px;border-radius:999px;color:#fff;font-size:12px;font-weight:650;white-space:nowrap;background:linear-gradient(110deg,var(--vsr-s1-badge-b) 0%,var(--vsr-s1-badge-a) 55%,var(--vsr-s1-blue) 100%);box-shadow:0 1px 2px color-mix(in srgb,var(--vsr-s1-badge-b) 35%,transparent),inset 0 1px 0 rgba(255,255,255,.26)}
-.vsr-s1__duo .vsr-s1__glyph{color:#FFD56B}
 .vsr-s1__glyph{flex:none}
 .vsr-s1__links{display:inline-flex;flex:none;gap:10px}
 a.vsr-s1__link{text-decoration:none}
-.vsr-s1__rows{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:12px;row-gap:8px;margin-top:9px}
+.vsr-s1__rows{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:12px;row-gap:8px;margin-top:8px}
 .vsr-s1__rows>*{grid-column:1/-1}
 .vsr-s1__row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-columns:subgrid;column-gap:12px;align-items:start}
 .vsr-s1__verdicts{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:92px}
 .vsr-s1__pill{--tone:var(--vsr-s1-text-3);display:inline-flex;align-items:center;gap:6px;padding:1px 8px 1px 7px;border-radius:6px;color:var(--tone);background:color-mix(in srgb,var(--tone) 12%,transparent);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--tone) 22%,transparent);font-size:12px;font-weight:650;line-height:20px;white-space:nowrap}
 .vsr-s1__pill::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:currentColor}
 .vsr-s1__pill--then::before{width:auto;height:auto;border-radius:0;background:none;content:"\\21B3"}
-.vsr-s1__pill--ok{--tone:var(--vsr-s1-ok)}.vsr-s1__pill--warn{--tone:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__pill--bad{--tone:var(--vsr-s1-bad)}.vsr-s1__pill--info{--tone:var(--vsr-s1-ink)}.vsr-s1__pill--muted{--tone:var(--vsr-s1-text-3)}
+.vsr-s1__pill--ok,.vsr-s1__pill--info{--tone:var(--vsr-s1-ink)}.vsr-s1__pill--warn{--tone:color-mix(in srgb,var(--vsr-s1-warn) 82%,var(--vsr-s1-text))}.vsr-s1__pill--bad{--tone:var(--vsr-s1-bad)}.vsr-s1__pill--muted{--tone:var(--vsr-s1-text-3)}
 .vsr-s1__main{display:grid;gap:3px;min-width:0}
 .vsr-s1__subject{display:flex;align-items:baseline;gap:7px;min-width:0;line-height:22px}
 .vsr-s1__tool{flex:none;color:var(--vsr-s1-text-2);font-weight:600}
@@ -787,9 +886,11 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__facts{display:flex;flex-wrap:wrap;gap:3px 16px;color:var(--vsr-s1-text-2);font-size:12.5px;line-height:22px}
 .vsr-s1__fact{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .vsr-s1__fact b{color:var(--vsr-s1-text);font-weight:600;font-variant-numeric:tabular-nums}
+.vsr-s1__level{display:inline-block;margin-right:1px;padding:0 6px;border-radius:5px;line-height:18px;font-weight:650}
+.vsr-s1__level--bad{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 12%,transparent);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--vsr-s1-bad) 26%,transparent)}
 .vsr-s1__bar{position:relative;width:34px;height:4px;border-radius:2px;overflow:hidden;background:var(--vsr-s1-track)}
 .vsr-s1__bar>i{position:absolute;inset:0;border-radius:inherit;background:var(--vsr-s1-blue);transform-origin:left center;transform:scaleX(var(--p))}
-.vsr-s1__bar--ok>i{background:var(--vsr-s1-ok)}.vsr-s1__bar--warn>i{background:var(--vsr-s1-warn)}.vsr-s1__bar--bad>i{background:var(--vsr-s1-bad)}
+.vsr-s1__bar--warn>i{background:var(--vsr-s1-warn)}.vsr-s1__bar--bad>i{background:var(--vsr-s1-bad)}
 .vsr-s1__note{color:var(--vsr-s1-text-2);font-size:12.5px}
 .vsr-s1__span{padding:0 3px;border-radius:4px;color:inherit;background:none;font:inherit}
 .vsr-s1__span--removed{color:var(--vsr-s1-bad);background:color-mix(in srgb,var(--vsr-s1-bad) 14%,transparent);text-decoration:line-through;text-decoration-thickness:1.5px}
@@ -798,23 +899,27 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__span--masked{display:inline-block;padding:0 6px;color:var(--dsw-alias-bg-layer-1,#fff);background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--vsr-s1-text) 80%,transparent) 0 6px,color-mix(in srgb,var(--vsr-s1-text) 66%,transparent) 6px 12px);font-family:var(--vsr-s1-mono);font-size:11px;font-weight:650;letter-spacing:.02em;line-height:17px}
 .vsr-s1__excerpts{display:grid;gap:5px;margin:3px 0 1px}
 .vsr-s1__excerpt{padding:6px 9px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-blue) 50%,transparent);border-radius:0 6px 6px 0;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-text-3) 8%,transparent);font-family:var(--vsr-s1-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
-.vsr-s1--bad .vsr-s1__excerpt{border-left-color:color-mix(in srgb,var(--vsr-s1-bad) 55%,transparent)}
-.vsr-s1--warn .vsr-s1__excerpt{border-left-color:color-mix(in srgb,var(--vsr-s1-warn) 60%,transparent)}
 .vsr-s1__labels{display:flex;flex-wrap:wrap;gap:4px 6px}
 .vsr-s1__label{display:inline-flex;align-items:center;gap:5px;padding:0 7px;border-radius:5px;color:var(--vsr-s1-text-2);background:color-mix(in srgb,var(--vsr-s1-blue) 10%,transparent);font-family:var(--vsr-s1-mono);font-size:11.5px;line-height:20px}
 .vsr-s1__label b{color:var(--vsr-s1-text);font-weight:650}
 .vsr-s1__rowms{color:var(--vsr-s1-text-3);font-size:12px;line-height:22px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .vsr-s1__more,.vsr-s1__link{justify-self:start;padding:0;border:0;background:none;color:var(--dsw-alias-link,#2F7BF6);font:inherit;font-size:12.5px;cursor:pointer}
 .vsr-s1__more:hover,.vsr-s1__link:hover{text-decoration:underline}
-.vsr-s1--compact{margin:4px 0}
-.vsr-s1__chip{display:flex;align-items:center;gap:9px;width:100%;min-width:0;padding:3px 0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.vsr-s1--compact{margin:2px 0}
+.vsr-s1__chip{width:100%;height:24px;padding:0;border:0;background:none;font-family:inherit;text-align:left;cursor:pointer;transition:color .1s ease}
+.vsr-s1__chip:hover{color:var(--vsr-s1-row-hover)}
 .vsr-s1__chip--static{cursor:default}
-.vsr-s1__chev{flex:none;color:var(--vsr-s1-text-3);transition:transform .2s var(--vsr-s1-ease),color .2s ease}
-.vsr-s1__chip:hover .vsr-s1__chev{color:var(--vsr-s1-text-2)}
-.vsr-s1--open .vsr-s1__chev{transform:rotate(90deg)}
-.vsr-s1--compact>.vsr-s1__rows{margin:4px 0 8px 3px;padding-left:12px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-blue) 40%,transparent)}
-.vsr-s1--plain .vsr-s1__reflex{color:var(--vsr-s1-text-2)}
+.vsr-s1__chip--static:hover{color:var(--vsr-s1-row)}
+.vsr-s1__chev{flex:none;color:inherit}
+.vsr-s1--compact>.vsr-s1__rows{margin:4px 0 8px 7px;padding-left:15px;border-left:2px solid color-mix(in srgb,var(--vsr-s1-blue) 40%,transparent)}
 .vsr-s1__raw{margin:4px 0 8px;padding:8px 10px;max-height:320px;overflow:auto;border-radius:8px;background:color-mix(in srgb,var(--vsr-s1-text-3) 10%,transparent);font-family:var(--vsr-s1-mono);font-size:12px;white-space:pre-wrap}
+.vsr-s1__shim{position:relative;display:inline-grid;flex:1 1 auto;min-width:0;max-width:100%;vertical-align:top}
+.vsr-s1__shim-line{display:flex;align-items:center;min-width:0}
+.vsr-s1__shim-deco{position:absolute;inset:0;overflow:clip;pointer-events:none;user-select:none}
+.vsr-s1__shim-sweep{position:absolute;inset:0;overflow:hidden;color:var(--vsr-s1-glint);-webkit-mask-image:linear-gradient(105deg,transparent 0%,#000 40% 60%,transparent 100%);mask-image:linear-gradient(105deg,transparent 0%,#000 40% 60%,transparent 100%);transform:translateX(-100%)}
+.vsr-s1__shim-sweep *{color:inherit!important}
+.vsr-s1__shim-sweep .vsr-s1__sep{background:currentColor}
+.vsr-s1__shim-copy{width:100%;height:100%;transform:translateX(100%)}
 .vsr-s1__q{display:grid;grid-template-columns:minmax(80px,140px) minmax(0,1fr);column-gap:14px;align-items:start}
 .vsr-s1__qname{overflow:hidden;color:var(--vsr-s1-text);font-family:var(--vsr-s1-mono);font-size:12.5px;line-height:16px;white-space:nowrap;text-overflow:ellipsis;background:none;padding:0}
 .vsr-s1__qbody{display:grid;gap:4px;min-width:0}
@@ -828,30 +933,25 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1__swatch{flex:none;width:8px;height:8px;margin-right:6px;border-radius:2px}
 .vsr-s1__foot{color:var(--vsr-s1-text-3);font-size:12.5px}
 .vsr-s1__foot code{font-family:var(--vsr-s1-mono)}
-.vsr-s1__progress{position:relative;display:block;height:2px;margin:0 0 4px 1px;border-radius:2px;overflow:hidden;background:color-mix(in srgb,var(--vsr-s1-blue) 12%,transparent)}
-.vsr-s1__progress::before{content:"";position:absolute;top:0;bottom:0;left:0;width:36%;border-radius:inherit;background:linear-gradient(90deg,transparent,var(--vsr-s1-blue) 55%,transparent)}
-.vsr-s1--deciding .vsr-s1__badge::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(100deg,transparent 35%,rgba(255,255,255,.42) 50%,transparent 65%);background-size:220% 100%;pointer-events:none}
-.vsr-s1__shimmer{background:linear-gradient(90deg,var(--vsr-s1-text-2) 35%,var(--vsr-s1-blue) 50%,var(--vsr-s1-text-2) 65%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent}
 @keyframes vsr-s1-reveal{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @keyframes vsr-s1-rise{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
 @keyframes vsr-s1-draw{from{transform:scaleY(0)}to{transform:scaleY(1)}}
 @keyframes vsr-s1-fill{from{transform:scaleX(0)}}
 @keyframes vsr-s1-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @keyframes vsr-s1-ink{from{background-color:transparent;box-shadow:none}}
-@keyframes vsr-s1-breathe{0%,100%{opacity:1}50%{opacity:.4}}
-@keyframes vsr-s1-shimmer{from{background-position:130% 0}to{background-position:-30% 0}}
-@keyframes vsr-s1-scan{from{transform:translateX(-100%)}to{transform:translateX(280%)}}
+@keyframes vsr-s1-sweep{0%{transform:translateX(-100%)}66.6667%,to{transform:translateX(100%)}}
+@keyframes vsr-s1-sweep-back{0%{transform:translateX(100%)}66.6667%,to{transform:translateX(-100%)}}
+@keyframes vsr-s1-settle{from{opacity:.4}to{opacity:1}}
 .vsr-s1--fresh{animation:vsr-s1-reveal .22s var(--vsr-s1-ease) both}
 .vsr-s1--fresh>.vsr-s1__sheen::before{animation:vsr-s1-draw .42s var(--vsr-s1-ease) .06s both}
 .vsr-s1__row--fresh{animation:vsr-s1-rise .24s var(--vsr-s1-ease) both;animation-delay:calc(60ms + var(--vsr-s1-i,0) * 45ms)}
 .vsr-s1__row--fresh .vsr-s1__bar>i{animation:vsr-s1-fill .6s var(--vsr-s1-ease) .16s both}
 .vsr-s1__row--fresh .vsr-s1__span{animation:vsr-s1-ink .5s ease-out .26s both}
 .vsr-s1__stack--fresh>i{animation:vsr-s1-grow .6s var(--vsr-s1-ease) both}
-.vsr-s1--deciding .vsr-s1__dot{animation:vsr-s1-breathe 1.4s ease-in-out infinite}
-.vsr-s1--deciding .vsr-s1__badge::after{animation:vsr-s1-shimmer 1.8s linear infinite}
-.vsr-s1__progress::before{animation:vsr-s1-scan 1.6s cubic-bezier(.45,0,.55,1) infinite}
-.vsr-s1__shimmer{animation:vsr-s1-shimmer 2s linear infinite}
-@media (prefers-reduced-motion:reduce){.vsr-s1,.vsr-s1 *,.vsr-s1 *::before,.vsr-s1 *::after{animation:none!important;transition:none!important}.vsr-s1__shimmer{color:var(--vsr-s1-text-2);background:none}.vsr-s1--deciding .vsr-s1__badge::after{display:none}.vsr-s1__progress::before{width:100%;opacity:.45;background:var(--vsr-s1-blue)}}
+.vsr-s1__shim-sweep{animation:vsr-s1-sweep 1.5s steps(48,end) .3s infinite}
+.vsr-s1__shim-copy{animation:vsr-s1-sweep-back 1.5s steps(48,end) .3s infinite}
+.vsr-s1--settle .vsr-s1__shim-line{animation:vsr-s1-settle .32s var(--vsr-s1-ease) both}
+@media (prefers-reduced-motion:reduce){.vsr-s1,.vsr-s1 *,.vsr-s1 *::before,.vsr-s1 *::after{animation:none!important;transition:none!important}.vsr-s1__shim-deco{display:none}}
 `
       if (typeof document !== 'undefined') {
         const tagId = `${PACKAGE}/system-one.css`

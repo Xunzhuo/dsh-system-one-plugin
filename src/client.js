@@ -151,8 +151,8 @@ export function createDecisionClient(options) {
    * Ask questions about one input, or about several inputs at once.
    * @param {object} request
    * @param {string} request.model
-   * @param {object} request.questions - shared by every input
-   * @param {Array<{state: string, images?: string[]}>} request.inputs - at most {@link ITEMS_PER_REQUEST}
+   * @param {object} request.questions - shared by every input that brings no questions of its own
+   * @param {Array<{state: string | object, images?: string[], questions?: object}>} request.inputs - at most {@link ITEMS_PER_REQUEST}
    * @param {AbortSignal} [request.signal]
    * @param {number} [request.timeoutMs] - per-call deadline (default: the client's)
    * @param {number} [request.retries] - per-call retries (default: the client's)
@@ -164,12 +164,12 @@ export function createDecisionClient(options) {
       throw new RangeError(`one request answers 1 to ${ITEMS_PER_REQUEST} inputs, got ${inputs.length}`)
     }
     const [first, ...rest] = inputs
-    const body = { model, state: first.state, questions }
+    const body = { model, state: first.state, questions: first.questions ?? questions }
     if (first.images?.length) body.images = first.images
     if (rest.length > 0) {
       body.states = Object.fromEntries(rest.map((input, index) => [
         `i${index + 1}`,
-        { state: input.state, questions, ...input.images?.length ? { images: input.images } : {} },
+        { state: input.state, questions: input.questions ?? questions, ...input.images?.length ? { images: input.images } : {} },
       ]))
     }
     await acquire(signal)
