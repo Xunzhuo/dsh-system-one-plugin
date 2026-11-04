@@ -22,6 +22,9 @@ export const FOUND_AT = 0.4
 const HALU_AT = 0.5
 const PII_AT = 0.5
 const IMAGES_SHOWN = 12
+// a batch waits out a spent per-minute budget (the key's, or its network address's) as the gateway's Retry-After
+// says, rather than fail; the reflexes keep their short limits
+const BATCH_LIMITS = { retries: 6, waitMs: 60000 }
 
 const DESCRIPTION = `Ask System One, a fast decision model, typed questions about many items at once (text records, files' lines, or images) and get calibrated probabilities back in seconds, instead of reading the items yourself. Use it whenever the same judgment applies to many items: routing, labeling, filtering, triage, scoring, ranking, moderation, finding personal data, checking claims against sources, spotting problems in screenshots.
 
@@ -357,7 +360,7 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       const started = performance.now()
       const answered = await Promise.all(jobs.map(async ({ group, start, count }) => {
         const slice = states.slice(start, start + count).map(({ state, images: attached }) => ({ state, images: attached }))
-        const response = await client.ask({ model: group.model, questions: group.questions, inputs: slice, signal: exec.signal })
+        const response = await client.ask({ model: group.model, questions: group.questions, inputs: slice, signal: exec.signal, ...BATCH_LIMITS })
         return { group, start, response }
       }))
       const seconds = Math.round((performance.now() - started) / 10) / 100

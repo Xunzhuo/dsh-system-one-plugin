@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.8 (2026-11-05)
+
+- **A batch waits out a spent per-minute budget.** Marking the demo's 230 tickets with `vllm-sr/vela3-turbo`, a
+  `system_one` call failed with `429 rate_limit_exceeded` while the per-minute budget of the key or of its network
+  address was spent: the client waited at most 10 s between tries and gave up after three, before the budget came
+  back. A batch now waits as long as the gateway's `Retry-After` says, up to a minute, for up to six tries, and a
+  cancel ends the wait. The reflexes keep their short limits, so no step is held for long, and a spent daily quota
+  (`quota_exceeded`, back at 00:00 UTC) now fails at once instead of being tried again.
+
 ## 0.6.7 (2026-11-05)
 
 - **Privacy's card shows the text as System Two read it.** System Two read a marked name masked wherever its parts

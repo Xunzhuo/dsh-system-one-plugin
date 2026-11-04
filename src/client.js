@@ -139,6 +139,7 @@ export function createDecisionClient(options) {
   async function post(path, body, signal, limits = {}) {
     const deadlineMs = limits.timeoutMs ?? timeoutMs
     const maxRetries = limits.retries ?? retries
+    const maxWaitMs = limits.waitMs ?? 10000
     const key = await apiKey()
     if (!key) throw new DecisionError(`no System One key: set ${options.apiKeyEnv}, or get a free System Duo key at https://app.vllm-sr.ai`, 401, 'missing_api_key')
     const payload = JSON.stringify(body)
@@ -169,11 +170,12 @@ export function createDecisionClient(options) {
       } catch {
         code = undefined
       }
-      const retryable = response.status === 429 || response.status === 502 || response.status === 503
+      // a daily quota is spent until 00:00 UTC; a per-minute budget, concurrency or capacity comes back soon
+      const retryable = (response.status === 429 && code !== 'quota_exceeded') || response.status === 502 || response.status === 503
       if (retryable && attempt < maxRetries) {
         const after = Number(response.headers['retry-after'])
-        const wait = Number.isFinite(after) && after > 0 ? Math.min(after, 10) * 1000 : 400 * 2 ** attempt
-        await sleep(wait + Math.random() * 200)
+        const wait = Number.isFinite(after) && after > 0 ? Math.min(after * 1000, maxWaitMs) : 400 * 2 ** attempt
+        await sleep(wait + Math.random() * 200, undefined, signal ? { signal } : undefined)
         continue
       }
       throw new DecisionError(`Decision API ${response.status}${code ? ` ${code}` : ''}`, response.status, code)
@@ -189,10 +191,12 @@ export function createDecisionClient(options) {
    * @param {AbortSignal} [request.signal]
    * @param {number} [request.timeoutMs] - per-call deadline (default: the client's)
    * @param {number} [request.retries] - per-call retries (default: the client's)
+   * @param {number} [request.waitMs] - the longest wait before a retry after a 429, 502 or 503: the gateway's
+   *   Retry-After, up to this (default 10 s)
    * @returns {Promise<{answers: object[], spans: object[], thresholds: object[], ms: number, model: string, inputTokens: number, requestId?: string}>}
    *   answers, span answers and the thresholds applied, in input order
    */
-  async function ask({ model, questions, inputs, signal, timeoutMs: callTimeoutMs, retries: callRetries }) {
+  async function ask({ model, questions, inputs, signal, timeoutMs: callTimeoutMs, retries: callRetries, waitMs }) {
     if (inputs.length === 0 || inputs.length > ITEMS_PER_REQUEST) {
       throw new RangeError(`one request answers 1 to ${ITEMS_PER_REQUEST} inputs, got ${inputs.length}`)
     }
@@ -208,7 +212,7 @@ export function createDecisionClient(options) {
     await acquire(signal)
     const started = performance.now()
     try {
-      const { json, requestId } = await post('/v1/decisions', body, signal, { timeoutMs: callTimeoutMs, retries: callRetries })
+      const { json, requestId } = await post('/v1/decisions', body, signal, { timeoutMs: callTimeoutMs, retries: callRetries, waitMs })
       const each = field => [json[field] ?? {}, ...rest.map((_, index) => json.states?.[`i${index + 1}`]?.[field] ?? {})]
       let inputTokens = json.usage?.input_tokens ?? 0
       for (const entry of Object.values(json.states ?? {})) inputTokens += entry.usage?.input_tokens ?? 0

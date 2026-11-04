@@ -55,6 +55,64 @@ test('retries a 429 after Retry-After, then succeeds', async () => {
   server.close()
 })
 
+test('a call may wait longer for a spent budget: Retry-After up to its waitMs, more retries, and a cancel ends the wait', async () => {
+  // each request takes the next answer: a Retry-After for a 429, or none for an answer
+  let plan = []
+  let calls = 0
+  const { server, url } = await fakeApi((body, request, response) => {
+    calls++
+    const after = plan.shift()
+    if (after) {
+      response.writeHead(429, { 'retry-after': after, 'content-type': 'application/json' })
+      response.end(JSON.stringify({ error: { code: 'rate_limit_exceeded' } }))
+      return
+    }
+    response.end(JSON.stringify({ answers: answer(body.state), model: body.model }))
+  })
+  process.env.S1_TEST_KEY = 'sk-vsr-test'
+  const client = createDecisionClient({ baseURL: url, apiKeyEnv: 'S1_TEST_KEY' })
+  const ask = limits => client.ask({ model: 'm', questions: {}, inputs: [{ state: 'attack' }], ...limits })
+
+  // four 429s in a row: three retries give up, six get through
+  plan = ['0.01', '0.01', '0.01', '0.01']
+  await assert.rejects(ask({}), /429 rate_limit_exceeded/)
+  plan = ['0.01', '0.01', '0.01', '0.01']
+  calls = 0
+  const r = await ask({ retries: 6 })
+  assert.deepEqual([calls, r.answers[0].injection.noul], [5, 0.99])
+
+  // Retry-After is honoured up to waitMs, and no further
+  for (const [waitMs, slow] of [[1000, true], [50, false]]) {
+    plan = ['0.5']
+    const started = Date.now()
+    await ask({ waitMs })
+    assert.equal(Date.now() - started >= 500, slow, `waitMs ${waitMs}`)
+  }
+
+  // a spent daily quota fails at once
+  calls = 0
+  const quota = await fakeApi((body, request, response) => {
+    calls++
+    response.writeHead(429, { 'retry-after': '20000', 'content-type': 'application/json' })
+    response.end(JSON.stringify({ error: { code: 'quota_exceeded' } }))
+  })
+  const daily = createDecisionClient({ baseURL: quota.url, apiKeyEnv: 'S1_TEST_KEY' })
+  await assert.rejects(daily.ask({ model: 'm', questions: {}, inputs: [{ state: 'x' }], retries: 6, waitMs: 60000 }), /429 quota_exceeded/)
+  assert.equal(calls, 1)
+  daily.close()
+  quota.server.close()
+
+  // a long wait ends when the call is cancelled
+  plan = ['5']
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), 50)
+  const started = Date.now()
+  await assert.rejects(ask({ waitMs: 60000, signal: controller.signal }), /abort/i)
+  assert.ok(Date.now() - started < 1000)
+  client.close()
+  server.close()
+})
+
 test('an unreachable API fails fast with the hook limits', async () => {
   process.env.S1_TEST_KEY = 'sk-vsr-test'
   const client = createDecisionClient({ baseURL: 'http://127.0.0.1:9', apiKeyEnv: 'S1_TEST_KEY' })

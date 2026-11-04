@@ -87,19 +87,26 @@ function decide(questions, state, images) {
 
 function fakeDecisions() {
   const asked = []
+  // the next requests answered 429, as when a per-minute budget is spent
+  let refusals = 0
   return new Promise(resolve => {
     const server = http.createServer((request, response) => {
       const chunks = []
       request.on('data', chunk => chunks.push(chunk))
       request.on('end', () => {
         if (request.url !== '/v1/decisions') return response.end('{}')
+        if (refusals > 0) {
+          refusals--
+          response.writeHead(429, { 'retry-after': '0.01', 'content-type': 'application/json' })
+          return response.end(JSON.stringify({ error: { code: 'rate_limit_exceeded' } }))
+        }
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         asked.push(body)
         const states = Object.fromEntries(Object.entries(body.states ?? {}).map(([id, input]) => [id, decide(input.questions, input.state, input.images)]))
         response.end(JSON.stringify({ model: body.model, ...decide(body.questions, body.state, body.images), states }))
       })
     })
-    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, asked }))
+    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, asked, refuse: n => (refusals = n) }))
   })
 }
 
@@ -110,7 +117,7 @@ async function setup(t, files = {}) {
     await mkdir(dirname(join(workspace, name)), { recursive: true })
     await writeFile(join(workspace, name), content)
   }
-  const { server, url, asked } = await fakeDecisions()
+  const { server, url, asked, refuse } = await fakeDecisions()
   const client = createDecisionClient({ baseURL: url, apiKeyEnv: 'S1_TOOL_KEY' })
   const traced = []
   const config = { toolName: 'system_one', model: 'vllm-sr/d3-ultra', spanModel: 'vllm-sr/vela3-turbo', toolMaxItems: 500, toolMaxChars: 4000, systemOneUi: 'card' }
@@ -122,7 +129,7 @@ async function setup(t, files = {}) {
   })
   const run = args => tool.execute(args, { agent: { session: { id: 's' } } })
   const rendered = value => tool.output.render({}, value)[0].text
-  return { workspace, asked, run, rendered, traced }
+  return { workspace, asked, run, rendered, traced, refuse }
 }
 
 const readRows = async path => (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
@@ -218,6 +225,13 @@ test('redaction keeps each item\'s id, the ids in its text and its punctuation, 
   const again = await run({ questions: { personal: { preset: 'pii' } }, file: 'calls.redacted.jsonl' })
   assert.deepEqual(again.summary.personal.labels, {})
   assert.equal(again.summary.personal.items, 0)
+})
+
+test('a batch waits out a spent per-minute budget instead of failing', async t => {
+  const { run, refuse } = await setup(t)
+  refuse(5)
+  const value = await run({ questions: { broken: { type: 'noul', instructions: 'Does it report something broken?' } }, items: ['the export fails', 'how do I invite a teammate?'] })
+  assert.deepEqual([value.summary.broken.yes, value.summary.broken.no, value.summary.broken.failed], [1, 1, 0])
 })
 
 test('redact masks custom labels when no pii question is asked, writes inline items to a text file, and never overwrites its input', async t => {
