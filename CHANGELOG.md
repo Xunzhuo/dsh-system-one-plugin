@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.6 (2026-11-05)
+
+- **A phone number has at least seven digits.** Privacy masked an image size in a command's output (`saved 960x540`)
+  as a phone number; a size and a number of fewer than seven digits are no longer masked as one. The demo's
+  transcripts and tickets keep every phone number masked.
+- **A file path is no street address.** Privacy masked the directory in pip's warning (`The directory '…/.cache/pip'
+  or its parent directory is not owned`) as a street address, hiding from System Two where its own tools wrote. A
+  span with a path separator and no spaces is no longer masked as an address; an address has spaces, and the demo's
+  three addresses stay masked.
+- **`system_one_screen` reads a `find` list of objects.** Asked to find
+  `[{"settings": "the Settings link"}, {"billing": "the Billing link"}]`, the screen tool looked for one target named
+  `[object Object]` and found nothing. Each object in a list now names its targets, as `{"id": "what it is"}` or
+  `{"id": ..., "description": ...}`, and two targets with one id are both looked for.
+
 ## 0.6.5 (2026-11-05)
 
 - **halu and evidence read the sources when a record names its own context.** Checking draft replies with

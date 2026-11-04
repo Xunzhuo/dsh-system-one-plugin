@@ -22,6 +22,19 @@ const DESCRIPTION = `Look at one screenshot with System One, a fast vision decis
 
 Coordinates are pixels of the screenshot, from its top left corner.`
 
+const WORDS = ['instructions', 'what', 'description', 'text']
+const describe = what => (typeof what === 'string' ? what : WORDS.map(key => what?.[key]).find(text => typeof text === 'string'))
+
+/** One item of a `find` list: a description that is its own id, {"id": ..., "description": ...}, or {"id": "what it is"}. */
+function listed(item) {
+  if (!item || typeof item !== 'object') return [[clip(String(item), 80), String(item)]]
+  const id = item.id ?? item.name
+  const what = describe(item)
+  if (typeof id === 'string' && what) return [[id, what]]
+  if (what && Object.keys(item).length === 1) return [[clip(what, 80), what]]
+  return Object.entries(item).map(([key, value]) => [key, describe(value) ?? JSON.stringify(value)])
+}
+
 /** What `find` names: {"id": "what it is"}, or a list of descriptions that are their own ids. */
 function targetsOf(value) {
   if (value === undefined || value === null || value === '') return {}
@@ -34,11 +47,16 @@ function targetsOf(value) {
     }
   }
   if (typeof parsed === 'string') parsed = [parsed]
-  if (Array.isArray(parsed)) return Object.fromEntries(parsed.map(what => [clip(String(what), 80), String(what)]))
-  if (parsed && typeof parsed === 'object') {
-    return Object.fromEntries(Object.entries(parsed).map(([id, what]) => [id, typeof what === 'string' ? what : String(what?.instructions ?? JSON.stringify(what))]))
+  if (!parsed || typeof parsed !== 'object') throw new Error('find names what to locate: {"id": "what it is"}, or a list of descriptions')
+  const entries = Array.isArray(parsed) ? parsed.flatMap(listed) : Object.entries(parsed).map(([id, what]) => [id, describe(what) ?? JSON.stringify(what)])
+  // two targets under one id would ask for one of them only
+  const targets = new Map()
+  for (const [id, what] of entries) {
+    let key = id
+    for (let n = 2; targets.has(key); n++) key = `${id} (${n})`
+    targets.set(key, what)
   }
-  throw new Error('find names what to locate: {"id": "what it is"}, or a list of descriptions')
+  return Object.fromEntries(targets)
 }
 
 async function readShot(cwd, path, name) {

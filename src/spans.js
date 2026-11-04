@@ -122,11 +122,16 @@ export function idAsData(span) {
 
 /**
  * Whether a personal-data span marks what only looks like personal data to the span model: a placeholder or a label's
- * name, an id, or a number of up to three digits taken for a licence or a phone number, as the count in "230 tickets
- * written". A card's few digits (a security code) stay personal.
+ * name, an id, a number of up to three digits taken for a licence, as the count in "230 tickets written" (a card's
+ * few digits, a security code, stay personal), a phone number with fewer than seven digits or written as a size
+ * (`960x540`), or a file path taken for a street address (an address has spaces).
  */
 export function notPersonal(span, text) {
-  return onPlaceholder(span, text) || idAsData(span) || (span.label !== 'CREDIT_CARD' && /^\d{1,3}$/.test(span.text.trim()))
+  const value = span.text.trim()
+  if (onPlaceholder(span, text) || idAsData(span)) return true
+  if (span.label === 'PHONE_NUMBER') return (value.match(/\d/g)?.length ?? 0) < 7 || /^\d+\s?[x×]\s?\d+$/.test(value)
+  if (span.label === 'STREET_ADDRESS' && /[/\\]/.test(value) && !/\s/.test(value)) return true
+  return span.label !== 'CREDIT_CARD' && /^\d{1,3}$/.test(value)
 }
 
 /**

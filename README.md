@@ -20,7 +20,7 @@ and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ```bash
 npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add @vllm-sr/dsh@0.6.5
+dsh plugin --profile web add @vllm-sr/dsh@0.6.6
 dsh web
 ```
 
@@ -40,7 +40,7 @@ in the app and System One keeps working beside it.
 Headless:
 
 ```bash
-dsh plugin --profile headless add @vllm-sr/dsh@0.6.5
+dsh plugin --profile headless add @vllm-sr/dsh@0.6.6
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
@@ -331,7 +331,8 @@ form they were recorded with. The tool's custom row is drawn for the default `to
 With privacy on (the default), System Two sees `[LABEL]` placeholders instead of personal data in the results of
 `privacyTools`, so it cannot copy a real value into a file it writes from what it read; it is told to ask you
 instead. Placeholders already in a result, as in a redacted copy, are left as they are, and so are their bare names
-(`'CREDIT_CARD'` in a list) and ids such as `m01` that the span model takes for names. Span records keep labels
+(`'CREDIT_CARD'` in a list), ids such as `m01`, sizes such as `960x540` and file paths that the span model takes for
+names, numbers or addresses. Span records keep labels
 and offsets of personal data, never the data itself. A guard or done-check model
 that answers no span questions (a d3 model) gets the questions over the text, and `spanModel` marks the words in a
 second request.

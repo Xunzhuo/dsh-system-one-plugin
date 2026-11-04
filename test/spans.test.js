@@ -53,9 +53,18 @@ test('an id taken for a name or a card and a count taken for a licence are told 
   const text = '230 tickets written; card ends in 4242, code 123; licence D1234567'
   const at = (part, label) => ({ label, start: text.indexOf(part), end: text.indexOf(part) + part.length, text: part })
   assert.equal(notPersonal(at('230', 'US_DRIVER_LICENSE'), text), true)
+  assert.equal(notPersonal(at('230', 'STREET_ADDRESS'), text), true)
   assert.equal(notPersonal(at('123', 'CREDIT_CARD'), text), false, 'a card\'s security code')
   assert.equal(notPersonal(at('4242', 'CREDIT_CARD'), text), false)
   assert.equal(notPersonal(at('D1234567', 'US_DRIVER_LICENSE'), text), false)
+  const phones = 'saved 960x540 ch 3 and 1920x1080; ext. 4021; call +1 415 555 0134 or 555-0100'
+  const phone = part => ({ label: 'PHONE_NUMBER', start: phones.indexOf(part), end: phones.indexOf(part) + part.length, text: part })
+  for (const size of ['960x540', '1920x1080', '4021']) assert.equal(notPersonal(phone(size), phones), true, size)
+  for (const number of ['+1 415 555 0134', '555-0100']) assert.equal(notPersonal(phone(number), phones), false, number)
+  const places = "WARNING: The directory '/home/dev/.cache/pip' or its parent is not owned; C:\\Users\\dev\\cache; ship to 14 Rue de Rivoli, Paris or Flat 2/14 George St"
+  const place = part => ({ label: 'STREET_ADDRESS', start: places.indexOf(part), end: places.indexOf(part) + part.length, text: part })
+  for (const path of ['/home/dev/.cache/pip', 'C:\\Users\\dev\\cache']) assert.equal(notPersonal(place(path), places), true, path)
+  for (const address of ['14 Rue de Rivoli, Paris', 'Flat 2/14 George St']) assert.equal(notPersonal(place(address), places), false, address)
 })
 
 test('overlapping spans keep the more probable one', () => {

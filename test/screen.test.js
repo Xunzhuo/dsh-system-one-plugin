@@ -132,6 +132,19 @@ test('a screen step asks only what it is given, takes find as a list, and refuse
   assert.match(rendered(listed), /^- "the Save button": click \(100, 63\)/m)
   assert.equal(listed.checks, undefined)
 
+  // a list of objects names each target, and no two targets share an id
+  const objects = await run({
+    image: 'shots/02.png',
+    find: JSON.stringify([{ save: 'the Save button' }, { id: 'error', description: 'an error message' }, { what: 'the Save link' }, { save: 'a second Save button' }]),
+  })
+  assert.deepEqual(Object.fromEntries(Object.entries(objects.found).map(([id, target]) => [id, target.what])), {
+    save: 'the Save button',
+    error: 'an error message',
+    'the Save link': 'the Save link',
+    'save (2)': 'a second Save button',
+  })
+  assert.doesNotMatch(rendered(objects), /object Object/)
+
   asked.length = 0
   const compared = await run({ image: 'shots/02.png', before: 'shots/01.png', action: 'pressed Delete' })
   assert.deepEqual([asked.length, asked[0].images.length, compared.action.succeeded, compared.found], [1, 2, 0.08, undefined])
