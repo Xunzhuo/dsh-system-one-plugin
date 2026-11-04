@@ -8,7 +8,7 @@ import { annotatePng, imageSize } from './png.js'
 import { SENSITIVE_LABELS } from './questions.js'
 import { csvCell, redactItem, writeRedacted } from './redact.js'
 import { parseQuestions, planQuestions } from './rubric.js'
-import { excerpts, labelCounts, maskAround, placeSpans } from './spans.js'
+import { excerpts, labelCounts, maskAround, onPlaceholder, placeSpans, trimSpan } from './spans.js'
 import { clip } from './trace.js'
 
 export { parseQuestions } from './rubric.js'
@@ -368,6 +368,10 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
               .map(span => ({ ...span, start: span.start - shift, end: span.end - shift }))
             const kept = question.preset !== 'pii' || question.labels === 'all' ? undefined : question.labels ?? config.privacyLabels ?? SENSITIVE_LABELS
             if (kept) spans = spans.filter(span => kept.includes(span.label))
+            if (question.preset === 'pii') spans = spans.map(span => trimSpan(span, items[index].text)).filter(Boolean)
+            // an item's id names it, whatever it looks like; a placeholder of a redacted copy was personal data once
+            const named = typeof state === 'string' ? items[index].segments?.find(segment => segment.field !== undefined && segment.field === items[index].idField) : undefined
+            spans = spans.filter(span => !(named && span.start < named.end && span.end > named.start) && !(question.preset === 'pii' && onPlaceholder(span, items[index].text)))
             if (question.preset === 'evidence' && sources && read === sources.context) spans = spans.map(span => ({ ...span, ...sourceAt(sources.blocks, span.start) }))
             found[index][id] = spans
             rows[index].answers[id] = {

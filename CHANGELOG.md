@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.3 (2026-11-05)
+
+- **Redaction keeps each item's id.** The pii preset took ids such as `C-2103` for names, and the redacted copy said
+  `"id": "[PERSON]"`, so its rows no longer matched the results. Spans in the field an id comes from are dropped.
+- **A marked name is masked wherever its parts recur**, as whole words: "Priya Raman" once makes "Thanks Priya" become
+  "Thanks [PERSON]", in a redacted copy and in what Privacy masks, and "Priyanka" stays.
+- **Placeholders stay placeholders.** Reading a redacted copy, the span model marks `[EMAIL_ADDRESS]` again as an
+  email address; the pii preset and Privacy now leave text that is already masked alone, so a second look at a copy
+  counts only what is still there.
+- **Masks keep the sentence's punctuation**: an address the model marks with its commas (", 2200 Mission Street,")
+  becomes `, [STREET_ADDRESS],` rather than swallowing them.
+
 ## 0.6.2 (2026-11-04)
 
 - **System One stays visible when a turn ends.** DeepSeek Harness folds a finished turn's tool calls into "Completed

@@ -72,6 +72,39 @@ export function replaceSpans(text, spans, mask) {
 /** Personal data masked by its label, as `[EMAIL_ADDRESS]`. */
 export const maskLabel = span => `[${span.label || 'PII'}]`
 
+const EDGE = /[\s,;:.!?]/
+
+/**
+ * A personal-data span without the spaces and punctuation at its edges, which the model may include, as in ", 2200
+ * Mission Street,": masked as they are, the sentence around them would lose its commas. Null when nothing is left.
+ */
+export function trimSpan(span, text) {
+  let { start, end } = span
+  while (start < end && EDGE.test(text[start])) start++
+  while (end > start && EDGE.test(text[end - 1])) end--
+  if (start === end) return null
+  return start === span.start && end === span.end ? span : { ...span, start, end, text: text.slice(start, end) }
+}
+
+const PLACEHOLDER = /\[[A-Z][A-Z0-9_]*\]/g
+
+/**
+ * Whether a span marks only placeholders text already masked, as `[EMAIL_ADDRESS]`: a span model reading a redacted
+ * copy marks them again, each under its own label.
+ */
+export function onPlaceholder(span, text) {
+  const covered = [...text.matchAll(PLACEHOLDER)].filter(match => match.index < span.end && match.index + match[0].length > span.start)
+  if (covered.length === 0) return false
+  let rest = ''
+  let cursor = span.start
+  for (const match of covered) {
+    rest += text.slice(cursor, Math.max(cursor, match.index))
+    cursor = Math.max(cursor, match.index + match[0].length)
+  }
+  rest += text.slice(Math.min(cursor, span.end), span.end)
+  return !/[\p{L}\p{N}]/u.test(rest)
+}
+
 /**
  * `text` with the `hidden` spans replaced by their `[LABEL]`, and `spans` moved onto the new text, so that an excerpt
  * of what one question marked does not show what another found to be personal. A hidden span that overlaps one of

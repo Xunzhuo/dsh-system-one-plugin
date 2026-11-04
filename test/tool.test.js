@@ -28,7 +28,12 @@ const spansIn = (text, pattern, label, probability = 0.95) => [...text.matchAll(
   return { label, start, end: start + Array.from(match[0]).length, text: match[0], probability }
 })
 const LABELS = { ERROR: 'HTTP \\d{3}|ERR_[A-Z_]+', COMPETITOR: 'Datadog|Snowflake' }
-const PERSONAL = [['[a-z.]+@[a-z]+\\.example', 'EMAIL_ADDRESS'], ['\\+1 \\d{3} \\d{3} \\d{4}', 'PHONE_NUMBER'], ['Dana Ruiz', 'PERSON'], ['Northwind', 'ORGANIZATION']]
+const PERSONAL = [
+  ['[a-z.]+@[a-z]+\\.example', 'EMAIL_ADDRESS'], ['\\+1 \\d{3} \\d{3} \\d{4}', 'PHONE_NUMBER'], ['Dana Ruiz', 'PERSON'], ['Priya Raman', 'PERSON'], ['Northwind', 'ORGANIZATION'],
+  // as vllm-sr/vela3-turbo does: a call's id taken for a name, an address with the commas around it, and the
+  // placeholders of a redacted copy marked again
+  ['C-\\d{4}', 'PERSON'], [', \\d+ Larch Road,', 'STREET_ADDRESS'], ['(?<=\\[)[A-Z_]{6,}(?=\\])', 'EMAIL_ADDRESS'],
+]
 const picked = (question, choice) => {
   const options = Object.keys(question.criteria)
   return { type: 'choice', choice, confidence: 0.9, probabilities: Object.fromEntries(options.map(option => [option, option === choice ? 0.9 : 0.1 / (options.length - 1)])) }
@@ -193,6 +198,21 @@ test('span questions mark custom labels and personal data, and redact writes a c
   assert.deepEqual(plain.summary.personal.labels, { PERSON: 2, PHONE_NUMBER: 2, EMAIL_ADDRESS: 1 })
   const every = await run({ questions: { personal: { preset: 'pii', labels: 'all' } }, file: 'tickets.jsonl' })
   assert.deepEqual(every.summary.personal.labels, { PERSON: 2, PHONE_NUMBER: 2, EMAIL_ADDRESS: 1, ORGANIZATION: 1 })
+})
+
+test('redaction keeps each item\'s id and its punctuation, masks the rest of a marked name, and a second look at the copy finds nothing new', async t => {
+  const calls = [{ id: 'C-2103', transcript: 'Hi, I am Priya Raman (priya@acme.example), 41 Larch Road, Bristol.\nThanks Priya; Priyanka in billing will call.' }]
+  const { workspace, run } = await setup(t, { 'calls.jsonl': `${JSON.stringify(calls[0])}\n` })
+  const value = await run({ questions: { personal: { preset: 'pii' } }, file: 'calls.jsonl', redact: true })
+  const [row] = await readRows(value.output)
+  assert.equal(row.id, 'C-2103')
+  assert.deepEqual(row.answers.personal.labels, { PERSON: 1, EMAIL_ADDRESS: 1, STREET_ADDRESS: 1 })
+  assert.deepEqual(value.redacted, { output: join(workspace, 'calls.redacted.jsonl'), items: 1, spans: 3 })
+  assert.deepEqual(await readRows(value.redacted.output), [{ id: 'C-2103', transcript: 'Hi, I am [PERSON] ([EMAIL_ADDRESS]), [STREET_ADDRESS], Bristol.\nThanks [PERSON]; Priyanka in billing will call.' }])
+
+  const again = await run({ questions: { personal: { preset: 'pii' } }, file: 'calls.redacted.jsonl' })
+  assert.deepEqual(again.summary.personal.labels, {})
+  assert.equal(again.summary.personal.items, 0)
 })
 
 test('redact masks custom labels when no pii question is asked, writes inline items to a text file, and never overwrites its input', async t => {

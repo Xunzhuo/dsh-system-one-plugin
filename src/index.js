@@ -27,7 +27,8 @@ import {
 import { UI_MODES, approvalOutcome, createRecorder, relativeTo, subject } from './records.js'
 import { SCREEN_TOOL, screenTool } from './screen.js'
 import { screen } from './shield.js'
-import { excerpts, labelCounts, maskLabel, placeSpans, replaceSpans, toCommands, windows } from './spans.js'
+import { everywhere, joined } from './redact.js'
+import { excerpts, labelCounts, maskLabel, onPlaceholder, placeSpans, replaceSpans, toCommands, trimSpan, windows } from './spans.js'
 import { systemOneTool } from './tool.js'
 import { clip, createTrace } from './trace.js'
 
@@ -679,7 +680,10 @@ export function apply(ctx, config) {
             const answer = await client.ask({ model: config.spanModel, questions: PII_SPANS, inputs: batch.map(part => ({ state: part.text })), signal: exec.signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
             model = answer.model
             batch.forEach((part, offset) => {
-              for (const span of placeSpans(answer.spans[offset]?.pii, part.text, { min: config.privacyAt }).filter(span => personal(span, state?.user))) found.push({ ...span, start: span.start + part.start, end: span.end + part.start })
+              const marked = placeSpans(answer.spans[offset]?.pii, part.text, { min: config.privacyAt })
+                .map(span => trimSpan(span, part.text))
+                .filter(span => span && personal(span, state?.user) && !onPlaceholder(span, part.text))
+              for (const span of marked) found.push({ ...span, start: span.start + part.start, end: span.end + part.start })
             })
           }
           privacy = { model, ms: performance.now() - started, spans: found }
@@ -715,7 +719,7 @@ export function apply(ctx, config) {
       }
       return {
         kind: 'accept',
-        content: [{ type: 'text', text: `${banners.join('\n')}\n\n${head}${hidden.length ? replaceSpans(body, hidden, maskLabel) : body}${foot}` }],
+        content: [{ type: 'text', text: `${banners.join('\n')}\n\n${head}${hidden.length ? replaceSpans(body, joined(everywhere(body, hidden)), maskLabel) : body}${foot}` }],
         additionalContexts: [...(downstream.additionalContexts ?? []), ...notices],
       }
     })

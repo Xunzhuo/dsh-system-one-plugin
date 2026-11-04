@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { excerpts, labelCounts, maskLabel, placeSpans, replaceSpans, toCommands, toSentences, unnumber, windows } from '../src/spans.js'
+import { excerpts, labelCounts, maskLabel, onPlaceholder, placeSpans, replaceSpans, toCommands, toSentences, trimSpan, unnumber, windows } from '../src/spans.js'
 
 test('span offsets in code points land on the right UTF-16 range, even after an emoji', () => {
   const text = 'Hi 👋 Ada, mail ada@example.com today'
@@ -21,6 +21,20 @@ test('a span whose offsets miss is found by its text; one not in the text, or to
     { label: 'INJECTION', start: 0, end: 6, text: 'ignore', probability: 0.2 },
   ], text, { min: 0.5 })
   assert.deepEqual(spans.map(span => [span.start, span.end]), [[35, 63]])
+})
+
+test('personal data loses the punctuation at its edges, and a placeholder already masked is told apart from data', () => {
+  const text = 'Billing: Acme, 2200 Mission Street, CA. Mail [EMAIL_ADDRESS] or [PERSON] Ada.'
+  const at = (part, from = 0) => ({ label: 'X', start: text.indexOf(part, from), end: text.indexOf(part, from) + part.length, text: part })
+  assert.equal(trimSpan(at(', 2200 Mission Street,'), text).text, '2200 Mission Street')
+  const exact = at('Acme')
+  assert.equal(trimSpan(exact, text), exact)
+  assert.equal(trimSpan(at(', '), text), null)
+  assert.equal(onPlaceholder(at('EMAIL_ADDRESS'), text), true)
+  assert.equal(onPlaceholder(at('[EMAIL_ADDRESS] or [PERSON]'), text), false, 'a word between two placeholders is text')
+  assert.equal(onPlaceholder(at('[PERSON]'), text), true)
+  assert.equal(onPlaceholder(at('[PERSON] Ada'), text), false)
+  assert.equal(onPlaceholder(at('Acme'), text), false)
 })
 
 test('overlapping spans keep the more probable one', () => {

@@ -67,12 +67,13 @@ function recordText(record, textField) {
   return { text, segments }
 }
 
+// an item's id, and the field it came from
 function recordId(record, idField, index) {
   if (typeof record !== 'string') {
-    if (idField && record[idField] !== undefined) return String(record[idField])
-    if (record.id !== undefined) return String(record.id)
+    if (idField && record[idField] !== undefined) return { id: String(record[idField]), idField }
+    if (record.id !== undefined) return { id: String(record.id), idField: 'id' }
   }
-  return String(index + 1)
+  return { id: String(index + 1) }
 }
 
 /** The format of a file of items, from its extension. */
@@ -83,10 +84,10 @@ export function formatOf(file) {
 
 /**
  * @param {object} options - `cwd` is the directory image sources are shown relative to
- * @returns {Promise<Array<{id: string, text: string, images?: string[], source?: string, path?: string, record?: object | string,
+ * @returns {Promise<Array<{id: string, idField?: string, text: string, images?: string[], source?: string, path?: string, record?: object | string,
  *   segments?: Array<{field?: string, start: number, end: number, json?: boolean}>, key?: string, line?: number, cut?: boolean}>>}
- *   `record` is what the item was read from, `key` its key in a JSON object, `line` its line in a file of lines, and
- *   `cut` says that its text was longer than `maxChars`
+ *   `record` is what the item was read from, `idField` the field its id came from, `key` its key in a JSON object,
+ *   `line` its line in a file of lines, and `cut` says that its text was longer than `maxChars`
  */
 export async function loadItems({ file, items, images, textField, idField, maxItems, maxChars, cwd = process.cwd() }) {
   const out = []
@@ -129,7 +130,7 @@ export async function loadItems({ file, items, images, textField, idField, maxIt
     }
     records.forEach((record, index) => {
       const { text, segments } = recordText(record, textField)
-      out.push({ id: recordId(record, idField, index), text, record, segments, ...(keys ? { key: keys[index] } : {}), ...(lines ? { line: lines[index] } : {}) })
+      out.push({ ...recordId(record, idField, index), text, record, segments, ...(keys ? { key: keys[index] } : {}), ...(lines ? { line: lines[index] } : {}) })
     })
   }
   for (const [index, text] of (items ?? []).entries()) out.push({ id: String(index + 1), text, record: text, segments: [{ start: 0, end: text.length }] })

@@ -20,7 +20,7 @@ and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ```bash
 npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add @vllm-sr/dsh@0.6.2
+dsh plugin --profile web add @vllm-sr/dsh@0.6.3
 dsh web
 ```
 
@@ -40,7 +40,7 @@ in the app and System One keeps working beside it.
 Headless:
 
 ```bash
-dsh plugin --profile headless add @vllm-sr/dsh@0.6.2
+dsh plugin --profile headless add @vllm-sr/dsh@0.6.3
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
@@ -131,7 +131,8 @@ refused with what to change. Beside the rubric:
 - `sources`: the files the items should agree with (docs, a policy, a changelog), for `halu` and `evidence`.
 - `state_fields`: the fields of each record a question reads, as `{"user": "question", "answer": "reply"}`.
 - `redact`: a copy of the items with what `pii` marked (else what the span questions marked) replaced by its
-  `[LABEL]`, in the input's format: `true` for `<file>.redacted.<ext>`, or a path.
+  `[LABEL]`, in the input's format: `true` for `<file>.redacted.<ext>`, or a path. Each item's id stays, and a
+  marked person's name is masked wherever it or a part of it recurs in the item.
 - `annotate`: a directory for PNG copies of the images with the boxes found drawn in red.
 
 ### Screens (`system_one_screen`)
@@ -326,7 +327,8 @@ form they were recorded with. The tool's custom row is drawn for the default `to
 
 With privacy on (the default), System Two sees `[LABEL]` placeholders instead of personal data in the results of
 `privacyTools`, so it cannot copy a real value into a file it writes from what it read; it is told to ask you
-instead. Span records keep labels and offsets of personal data, never the data itself. A guard or done-check model
+instead. Placeholders already in a result, as in a redacted copy, are left as they are. Span records keep labels
+and offsets of personal data, never the data itself. A guard or done-check model
 that answers no span questions (a d3 model) gets the questions over the text, and `spanModel` marks the words in a
 second request.
 
