@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { excerpts, labelCounts, maskLabel, onPlaceholder, placeSpans, replaceSpans, toCommands, toSentences, trimSpan, unnumber, windows } from '../src/spans.js'
+import { excerpts, idAsData, labelCounts, maskLabel, notPersonal, onPlaceholder, placeSpans, replaceSpans, toCommands, toSentences, trimSpan, unnumber, windows } from '../src/spans.js'
 
 test('span offsets in code points land on the right UTF-16 range, even after an emoji', () => {
   const text = 'Hi 👋 Ada, mail ada@example.com today'
@@ -35,6 +35,27 @@ test('personal data loses the punctuation at its edges, and a placeholder alread
   assert.equal(onPlaceholder(at('[PERSON]'), text), true)
   assert.equal(onPlaceholder(at('[PERSON] Ada'), text), false)
   assert.equal(onPlaceholder(at('Acme'), text), false)
+  const listed = "placeholders used: ['CREDIT_CARD', 'PERSON'], from ADA KING"
+  const named = (part, label) => ({ label, start: listed.indexOf(part), end: listed.indexOf(part) + part.length, text: part })
+  assert.equal(onPlaceholder(named('CREDIT_CARD', 'CREDIT_CARD'), listed), true, 'a label\'s bare name')
+  assert.equal(onPlaceholder(named('PERSON', 'PERSON'), listed), true)
+  assert.equal(onPlaceholder(named('ADA KING', 'PERSON'), listed), false)
+})
+
+test('an id taken for a name or a card and a count taken for a licence are told apart from personal data', () => {
+  const person = text => ({ label: 'PERSON', text })
+  for (const id of ['m01', 'C-2103', 'INV-2024-001', '#4411', '2103', '88231-B']) assert.equal(idAsData(person(id)), true, id)
+  for (const name of ['Ada Lovelace', 'alice42', "O'Brien"]) assert.equal(idAsData(person(name)), false, name)
+  assert.equal(idAsData({ label: 'CREDIT_CARD', text: 'INV-2291' }), true, 'an invoice number')
+  assert.equal(idAsData({ label: 'CREDIT_CARD', text: '4242' }), false)
+  assert.equal(idAsData({ label: 'US_DRIVER_LICENSE', text: 'D1234567' }), false)
+  assert.equal(idAsData({ label: 'PHONE_NUMBER', text: '555-0100' }), false)
+  const text = '230 tickets written; card ends in 4242, code 123; licence D1234567'
+  const at = (part, label) => ({ label, start: text.indexOf(part), end: text.indexOf(part) + part.length, text: part })
+  assert.equal(notPersonal(at('230', 'US_DRIVER_LICENSE'), text), true)
+  assert.equal(notPersonal(at('123', 'CREDIT_CARD'), text), false, 'a card\'s security code')
+  assert.equal(notPersonal(at('4242', 'CREDIT_CARD'), text), false)
+  assert.equal(notPersonal(at('D1234567', 'US_DRIVER_LICENSE'), text), false)
 })
 
 test('overlapping spans keep the more probable one', () => {

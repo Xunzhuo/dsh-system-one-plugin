@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.5 (2026-11-05)
+
+- **halu and evidence read the sources when a record names its own context.** Checking draft replies with
+  `state_fields: {"context": "question", "answer": "reply"}` and the policies as `sources`, the `system_one` tool read
+  each customer's question in place of the policies: evidence marked the questions (shown with "(undefined)" for a
+  source, and the card's excerpts cut from the wrong text) and halu flagged replies the policies back. The record's
+  context is now read before the sources. Over the demo's 12 drafts, evidence now backs all 12 with policy lines,
+  each with its file and line, and halu finds all five promises no policy makes (three under 0.6.4).
+- **Privacy and the pii preset leave what only looks like personal data.** The span model marked message ids (`m01`)
+  and an order number (`88231-B`) as names, an invoice number (`INV-2291`) as a card, the bare names of placeholders
+  in a list (`'CREDIT_CARD', 'PERSON'`) as what they name, and a count (`230 tickets written`) as a driver's licence;
+  Privacy masked them in what System Two read, and a second look at a redacted copy counted them. An id is no name,
+  a card number has no letters, and a label's name or a number of up to three digits is not personal data (a card's
+  few digits still are). Over the demo's transcripts and tickets Privacy masks the same 29 and 13 details as before,
+  and a second look at the redacted transcripts finds nothing.
+
 ## 0.6.4 (2026-11-05)
 
 - **A score on numbered levels uses their numbers.** System Two often writes a scale as `["1 = vague", "2 = clear",

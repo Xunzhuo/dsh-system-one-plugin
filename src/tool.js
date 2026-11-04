@@ -8,7 +8,7 @@ import { annotatePng, imageSize } from './png.js'
 import { ROUTER_SIGNALS, SENSITIVE_LABELS } from './questions.js'
 import { csvCell, redactItem, writeRedacted } from './redact.js'
 import { parseQuestions, planQuestions } from './rubric.js'
-import { excerpts, labelCounts, maskAround, onPlaceholder, placeSpans, trimSpan } from './spans.js'
+import { excerpts, labelCounts, maskAround, notPersonal, placeSpans, trimSpan } from './spans.js'
 import { clip } from './trace.js'
 
 export { parseQuestions } from './rubric.js'
@@ -85,7 +85,7 @@ function summarize(questions, rows, asked) {
         ...(question.preset === 'pii' ? {} : {
           examples: top.slice(0, 6).map(({ id: itemId, a }) => {
             const best = a.spans.reduce((x, y) => (y.p > x.p ? y : x))
-            return [itemId, best.label, clip(best.text.replace(/\s+/g, ' ').trim(), 120), best.p, ...(best.source ? [`${best.source}:${best.line}`] : [])]
+            return [itemId, best.label, clip(best.text.replace(/\s+/g, ' ').trim(), 120), best.p, ...(best.source ? [placeOf(best)] : [])]
           }),
         }),
         failed,
@@ -176,7 +176,7 @@ function renderSummary(value) {
       const counts = Object.entries(s.labels).map(([label, n]) => `${label} ${n}`)
       const items = `${s.items} of ${s.of} item(s)`
       if (s.preset === 'halu') lines.push(`- ${id}: words the sources do not support in ${items}${s.examples.length ? `: ${listed(s.examples.map(([itemId, , text]) => `${itemId} ("${text}")`), 6)}` : ''}`)
-      else if (s.preset === 'evidence') lines.push(`- ${id}: backed by the sources: ${items}${s.examples.length ? `; e.g. ${listed(s.examples.map(([itemId, , text, , where]) => `${itemId}: "${text}" (${where})`), 3)}` : ''}`)
+      else if (s.preset === 'evidence') lines.push(`- ${id}: backed by the sources: ${items}${s.examples.length ? `; e.g. ${listed(s.examples.map(([itemId, , text, , where]) => `${itemId}: "${text}"${where ? ` (${where})` : ''}`), 3)}` : ''}`)
       else if (s.preset === 'pii') lines.push(`- ${id}: personal data in ${items}${counts.length ? `: ${counts.join(', ')}; most in ${listed(s.top.map(([itemId, n]) => `${itemId} (${n})`))}` : ''}`)
       else lines.push(`- ${id}: ${counts.length ? counts.join(', ') : 'nothing marked'} in ${items}${s.examples.length ? `; e.g. ${listed(s.examples.map(([itemId, label, text]) => `${itemId} ${label} "${text}"`), 4)}` : ''}`)
     } else if (s.type === 'choice') {
@@ -249,6 +249,9 @@ function sourceAt(blocks, index) {
   return { source: block.source, line: 1 + (block.text.slice(0, index - block.start).match(/\n/g)?.length ?? 0) }
 }
 
+/** Where an evidence span is: a source's file and line, or the record's own field that it read before the sources. */
+const placeOf = span => (span.line ? `${span.source}:${span.line}` : span.source)
+
 const round3 = value => Math.round(value * 1000) / 1000
 
 /**
@@ -272,7 +275,7 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       images: { type: 'array', items: { type: 'string' }, description: 'Image paths (PNG, JPEG, WebP); each image is one item.' },
       context: { type: 'string', description: 'Text placed before every item: what the items are and whose (e.g. "Support tickets sent to Lumen Cloud, a data product"). It helps every question.' },
       sources: { type: 'array', items: { type: 'string' }, description: 'Files the items should agree with (docs, a policy, a changelog). Each item is checked against them: preset halu marks what they do not support, preset evidence the words of the sources that back the item.' },
-      state_fields: { type: 'json', description: 'For records: the parts System One reads of each item, as {"part": "field"}: "context" and "answer" for halu and evidence, "user" and "answer" for the signals r_harm and r_refusal.' },
+      state_fields: { type: 'json', description: 'For records: the parts System One reads of each item, as {"part": "field"}: "context" and "answer" for halu and evidence (with sources, a record\'s "context", as the message a reply answers, is read before them), "user" and "answer" for the signals r_harm and r_refusal.' },
       redact: { type: 'json', description: 'Write a copy of the items with marked words replaced by their [LABEL]: the personal data a preset pii question found, else what the span questions marked. true for <file>.redacted.<ext>, or a path.' },
       annotate: { type: 'string', description: 'For images with box questions: a directory to save copies of the images with the boxes found drawn in red (PNG).' },
       output: { type: 'string', description: 'Where to write one result row per item (.jsonl or .csv). Default: <file>.s1.jsonl beside the input file, <folder>.s1.jsonl beside the images\' folder, or ./system-one-results.jsonl.' },
@@ -330,8 +333,11 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
           }
         }
         if (grounded) {
-          state.context ??= sources.context
+          // a record's own context, as the customer's message a reply answers, reads before the sources
+          const own = state.context === undefined ? '' : `${state.context}\n\n`
+          state.context = own + sources.context
           state.answer ??= item.text
+          return { state, shift: 0, sourcesAt: own.length }
         }
         return { state, shift: 0 }
       })
@@ -386,10 +392,13 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
             const kept = question.preset !== 'pii' || question.labels === 'all' ? undefined : question.labels ?? config.privacyLabels ?? SENSITIVE_LABELS
             if (kept) spans = spans.filter(span => kept.includes(span.label))
             if (question.preset === 'pii') spans = spans.map(span => trimSpan(span, items[index].text)).filter(Boolean)
-            // an item's id names it, whatever it looks like; a placeholder of a redacted copy was personal data once
+            // an item's id names it, whatever it looks like
             const named = typeof state === 'string' ? items[index].segments?.find(segment => segment.field !== undefined && segment.field === items[index].idField) : undefined
-            spans = spans.filter(span => !(named && span.start < named.end && span.end > named.start) && !(question.preset === 'pii' && onPlaceholder(span, items[index].text)))
-            if (question.preset === 'evidence' && sources && read === sources.context) spans = spans.map(span => ({ ...span, ...sourceAt(sources.blocks, span.start) }))
+            spans = spans.filter(span => !(named && span.start < named.end && span.end > named.start) && !(question.preset === 'pii' && notPersonal(span, items[index].text)))
+            const at = states[index].sourcesAt
+            if (question.preset === 'evidence' && at !== undefined && entry.over === 'context') {
+              spans = spans.map(span => ({ ...span, ...(span.start >= at ? sourceAt(sources.blocks, span.start - at) : { source: fields.context }) }))
+            }
             found[index][id] = spans
             rows[index].answers[id] = {
               n: spans.length,
@@ -476,20 +485,24 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
           .slice(0, 3)
         if (picked.length === 0) continue
         examples[id] = picked.map(({ item, index, spans }) => {
-          let read = asked[id].over === 'context' ? sources?.context ?? states[index].state.context : asked[id].over && typeof states[index].state === 'object' ? states[index].state[asked[id].over] : item.text
+          let read = asked[id].over && typeof states[index].state === 'object' ? states[index].state[asked[id].over] : item.text
           let shown = spans
           if (kind === 'labels' && personalIds.length) ({ text: read, spans: shown } = maskAround(read, spans, personalOf(index)))
-          // evidence reads as a passage of its own file
-          const block = kind === 'evidence' && spans[0].source !== undefined ? sources?.blocks.find(entry => entry.source === spans[0].source) : undefined
+          // evidence reads as a passage of its own file, or of the record's own context
+          const block = kind === 'evidence' && spans[0].line !== undefined ? sources?.blocks.find(entry => entry.source === spans[0].source) : undefined
           if (block) {
+            const start = states[index].sourcesAt + block.start
             read = block.text
-            shown = spans.filter(span => span.source === block.source).map(span => ({ ...span, start: span.start - block.start, end: span.end - block.start }))
+            shown = spans.filter(span => span.source === block.source && span.line !== undefined).map(span => ({ ...span, start: span.start - start, end: span.end - start }))
+          } else if (kind === 'evidence' && spans[0].source !== undefined) {
+            read = read.slice(0, states[index].sourcesAt).trimEnd()
+            shown = spans.filter(span => span.line === undefined && span.source === spans[0].source)
           }
           return {
             id: item.id,
             kind,
             parts: excerpts(read, shown, { hide: kind === 'masked', around: kind === 'evidence' ? 28 : 40, max: 1, clip: 120, rank: true })[0],
-            ...(spans[0].source ? { source: `${spans[0].source}:${spans[0].line}` } : {}),
+            ...(spans[0].source ? { source: placeOf(spans[0]) } : {}),
           }
         })
       }

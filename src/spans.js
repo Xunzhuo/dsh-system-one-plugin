@@ -87,12 +87,16 @@ export function trimSpan(span, text) {
 }
 
 const PLACEHOLDER = /\[[A-Z][A-Z0-9_]*\]/g
+const LABEL_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/
 
 /**
- * Whether a span marks only placeholders text already masked, as `[EMAIL_ADDRESS]`: a span model reading a redacted
- * copy marks them again, each under its own label.
+ * Whether a span marks only placeholders text already masked, as `[EMAIL_ADDRESS]`, or a label's bare name, as a
+ * list of the placeholders a copy used prints them (`'CREDIT_CARD', 'PERSON'`): a span model reading them marks them
+ * again, each under its own label.
  */
 export function onPlaceholder(span, text) {
+  const bare = text.slice(span.start, span.end).trim()
+  if (bare === span.label || LABEL_NAME.test(bare)) return true
   const covered = [...text.matchAll(PLACEHOLDER)].filter(match => match.index < span.end && match.index + match[0].length > span.start)
   if (covered.length === 0) return false
   let rest = ''
@@ -103,6 +107,26 @@ export function onPlaceholder(span, text) {
   }
   rest += text.slice(Math.min(cursor, span.end), span.end)
   return !/[\p{L}\p{N}]/u.test(rest)
+}
+
+const ID = /^\p{L}{0,4}[-_#.]?\d[\d_./-]*(?:[-_]?\p{L}{1,2})?$/u
+
+/**
+ * Whether a span is an id that the span model took for a name (`m01`, `C-2103`, `88231-B`) or for a card number
+ * (`INV-2291`: cards have no letters). A user name such as `alice42` is still a person.
+ */
+export function idAsData(span) {
+  const value = span.text.trim()
+  return ID.test(value) && (span.label === 'PERSON' || (span.label === 'CREDIT_CARD' && /\p{L}/u.test(value)))
+}
+
+/**
+ * Whether a personal-data span marks what only looks like personal data to the span model: a placeholder or a label's
+ * name, an id, or a number of up to three digits taken for a licence or a phone number, as the count in "230 tickets
+ * written". A card's few digits (a security code) stay personal.
+ */
+export function notPersonal(span, text) {
+  return onPlaceholder(span, text) || idAsData(span) || (span.label !== 'CREDIT_CARD' && /^\d{1,3}$/.test(span.text.trim()))
 }
 
 /**

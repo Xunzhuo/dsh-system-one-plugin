@@ -201,15 +201,15 @@ test('span questions mark custom labels and personal data, and redact writes a c
   assert.deepEqual(every.summary.personal.labels, { PERSON: 2, PHONE_NUMBER: 2, EMAIL_ADDRESS: 1, ORGANIZATION: 1 })
 })
 
-test('redaction keeps each item\'s id and its punctuation, masks the rest of a marked name, and a second look at the copy finds nothing new', async t => {
-  const calls = [{ id: 'C-2103', transcript: 'Hi, I am Priya Raman (priya@acme.example), 41 Larch Road, Bristol.\nThanks Priya; Priyanka in billing will call.' }]
+test('redaction keeps each item\'s id, the ids in its text and its punctuation, masks the rest of a marked name, and a second look at the copy finds nothing new', async t => {
+  const calls = [{ id: 'C-2103', transcript: 'Hi, I am Priya Raman (priya@acme.example), 41 Larch Road, Bristol, again about C-2087.\nThanks Priya; Priyanka in billing will call.' }]
   const { workspace, run } = await setup(t, { 'calls.jsonl': `${JSON.stringify(calls[0])}\n` })
   const value = await run({ questions: { personal: { preset: 'pii' } }, file: 'calls.jsonl', redact: true })
   const [row] = await readRows(value.output)
   assert.equal(row.id, 'C-2103')
   assert.deepEqual(row.answers.personal.labels, { PERSON: 1, EMAIL_ADDRESS: 1, STREET_ADDRESS: 1 })
   assert.deepEqual(value.redacted, { output: join(workspace, 'calls.redacted.jsonl'), items: 1, spans: 3 })
-  assert.deepEqual(await readRows(value.redacted.output), [{ id: 'C-2103', transcript: 'Hi, I am [PERSON] ([EMAIL_ADDRESS]), [STREET_ADDRESS], Bristol.\nThanks [PERSON]; Priyanka in billing will call.' }])
+  assert.deepEqual(await readRows(value.redacted.output), [{ id: 'C-2103', transcript: 'Hi, I am [PERSON] ([EMAIL_ADDRESS]), [STREET_ADDRESS], Bristol, again about C-2087.\nThanks [PERSON]; Priyanka in billing will call.' }])
 
   const again = await run({ questions: { personal: { preset: 'pii' } }, file: 'calls.redacted.jsonl' })
   assert.deepEqual(again.summary.personal.labels, {})
@@ -273,6 +273,23 @@ test('grounded checks: halu marks the words of each claim its sources do not sup
   await assert.rejects(run({ questions: { unsupported: { preset: 'halu' } }, file: 'draft.md' }), /preset halu checks each item against sources/)
   await assert.rejects(run({ questions: { unsupported: { preset: 'halu' } }, file: 'draft.md', sources: ['big.md'] }), /System One reads at most 24000/)
   await assert.rejects(run({ questions: { personal: { preset: 'pii' } }, file: 'draft.md', sources: ['CHANGELOG.md'] }), /preset pii reads each item's text/)
+})
+
+test('with sources, a record\'s own context is read before them, and evidence in it names its field', async t => {
+  const changelog = '# Changelog\n\n## 2.4.0\n- Pipelines: export results as Parquet, next to CSV and JSON.\n'
+  const replies = [{ id: 'R-1', message: 'We need Parquet exports for our lake.', reply: 'Parquet export shipped in 2.4.' }]
+  const { asked, run, rendered } = await setup(t, { 'CHANGELOG.md': changelog, 'replies.jsonl': `${JSON.stringify(replies[0])}\n` })
+  const value = await run({ questions: { backed: { preset: 'evidence' } }, file: 'replies.jsonl', sources: ['CHANGELOG.md'], state_fields: { context: 'message', answer: 'reply' } })
+  assert.deepEqual(asked.at(-1).state, { context: `We need Parquet exports for our lake.\n\n[CHANGELOG.md]\n${changelog.trim()}`, answer: 'Parquet export shipped in 2.4.' })
+  const [row] = await readRows(value.output)
+  assert.deepEqual(row.answers.backed.spans.map(span => [span.text, span.source, span.line]), [
+    ['We need Parquet exports for our lake.', 'message', undefined],
+    ['- Pipelines: export results as Parquet, next to CSV and JSON.', 'CHANGELOG.md', 4],
+  ])
+  const [shown] = value.examples.backed
+  assert.equal(shown.source, 'message')
+  assert.equal(plainOf(shown.parts), '[evidence]We need Parquet exports for our lake.')
+  assert.match(rendered(value), /- backed: backed by the sources: 1 of 1 item\(s\); e\.g\. R-1: "We need Parquet exports for our lake\." \(message\)/)
 })
 
 test('router signals go to the span model under their trained names, beside the decision model\'s questions', async t => {

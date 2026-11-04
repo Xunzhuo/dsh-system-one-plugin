@@ -28,7 +28,7 @@ import { UI_MODES, approvalOutcome, createRecorder, relativeTo, subject } from '
 import { SCREEN_TOOL, screenTool } from './screen.js'
 import { screen } from './shield.js'
 import { everywhere, joined } from './redact.js'
-import { excerpts, labelCounts, maskLabel, onPlaceholder, placeSpans, replaceSpans, toCommands, trimSpan, windows } from './spans.js'
+import { excerpts, labelCounts, maskLabel, notPersonal, placeSpans, replaceSpans, toCommands, trimSpan, windows } from './spans.js'
 import { systemOneTool } from './tool.js'
 import { clip, createTrace } from './trace.js'
 
@@ -682,7 +682,7 @@ export function apply(ctx, config) {
             batch.forEach((part, offset) => {
               const marked = placeSpans(answer.spans[offset]?.pii, part.text, { min: config.privacyAt })
                 .map(span => trimSpan(span, part.text))
-                .filter(span => span && personal(span, state?.user) && !onPlaceholder(span, part.text))
+                .filter(span => span && personal(span, state?.user) && !notPersonal(span, part.text))
               for (const span of marked) found.push({ ...span, start: span.start + part.start, end: span.end + part.start })
             })
           }

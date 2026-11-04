@@ -124,9 +124,9 @@ function fakeDecisions({ delayMs = 0 } = {}) {
     for (const [id, question] of Object.entries(questions)) {
       if (question.preset === 'pii') {
         // like the real model, it also takes a file's owner and group, the machine's account, for one person, a home
-        // directory for its owner, and the placeholders of a redacted copy for what they replaced
+        // directory for its owner, the placeholders of a redacted copy for what they replaced, and ids for people
         const account = userInfo().username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION'), ...spansIn(state, ` ${account} ${account} `, 'PERSON').map(span => ({ ...span, start: span.start + 1, end: span.end - 1, text: span.text.trim() })), ...spansIn(state, '/home/[A-Za-z0-9_.-]+', 'PERSON'), ...spansIn(state, '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', 'IP_ADDRESS'), ...spansIn(state, '(?<=\\[)[A-Z_]{6,}(?=\\])', 'PERSON')]
+        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION'), ...spansIn(state, ` ${account} ${account} `, 'PERSON').map(span => ({ ...span, start: span.start + 1, end: span.end - 1, text: span.text.trim() })), ...spansIn(state, '/home/[A-Za-z0-9_.-]+', 'PERSON'), ...spansIn(state, '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', 'IP_ADDRESS'), ...spansIn(state, '(?<=\\[)[A-Z_]{6,}(?=\\])', 'PERSON'), ...spansIn(state, "(?<=')m\\d{2}(?=')", 'PERSON'), ...spansIn(state, "(?<=')EMAIL_ADDRESS(?=')", 'EMAIL_ADDRESS')]
       } else if (question.preset === 'halu') {
         out[id] = state.context.includes('MIT') ? [] : spansIn(state.answer, 'MIT licensed', 'unsupported')
       } else if (question.type === 'span' && question.over === 'context') {
@@ -626,6 +626,11 @@ test('privacy leaves the machine\'s own names, local addresses and the request\'
   const reread = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l3', arguments: { command: 'cat notes.redacted.txt' }, agent }, { isError: false, content: [{ type: 'text', text: copy }] }, async () => ({ kind: 'accept' }))
   assert.ok(reread.content[0].text.endsWith('from: [PERSON] <[EMAIL_ADDRESS]>\nsigned: [PERSON]. Thanks, [PERSON]! Adam replied.'), reread.content[0].text)
   assert.deepEqual([agent.session.records.at(-1).data.masked, agent.session.records.at(-1).data.labels], [1, { PERSON: 1 }])
+
+  // an id the model takes for a name and a label's bare name stay as they are
+  const ids = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l4', arguments: { command: 'head -2 inbox.jsonl' }, agent }, { isError: false, content: [{ type: 'text', text: "ids: ['m01', 'm02'] from Ada Lovelace; placeholders used: ['EMAIL_ADDRESS']" }] }, async () => ({ kind: 'accept' }))
+  assert.ok(ids.content[0].text.endsWith("ids: ['m01', 'm02'] from [PERSON]; placeholders used: ['EMAIL_ADDRESS']"), ids.content[0].text)
+  assert.deepEqual(agent.session.records.at(-1).data.masked, 1)
 })
 
 test('spans stay off while the span model does not list them', async t => {
