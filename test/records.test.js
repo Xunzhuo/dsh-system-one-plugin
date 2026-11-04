@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import { registerHooks } from 'node:module'
 import { test } from 'node:test'
-import { RECORD_TYPE, approvalOutcome, createRecorder, jsonSafe } from '../src/records.js'
+import { RECORD_TYPE, approvalOutcome, createRecorder, jsonSafe, relativeTo } from '../src/records.js'
 
 // The DeepSeek Harness packages index.js imports come from the harness at run time; here they are small stand-ins.
 // The session stand-in refuses what the real log refuses: data that does not survive a JSON round trip.
@@ -50,6 +50,18 @@ test('a record that cannot be written is reported, not thrown', () => {
   assert.deepEqual(jsonSafe({ a: -0, b: [1, undefined] }), { a: 0, b: [1, null] })
 })
 
+test('a card shows a call relative to the working directory, with the home directory as ~', () => {
+  const work = '/home/dana/Documents/deepseek-harness/default-workspace'
+  const show = text => relativeTo(text, `${work}/`, '/home/dana')
+  assert.equal(show(`cd ${work}/orders-api && git reset --hard v1.3`), 'cd orders-api && git reset --hard v1.3')
+  assert.equal(show(`cd ${work} && ls -la`), 'ls -la')
+  assert.equal(show(`${work}/invoicekit/README.md`), 'invoicekit/README.md')
+  assert.equal(show(`ls ${work}; cat "${work}/a.txt"`), 'ls .; cat "a.txt"')
+  assert.equal(show(`cat /home/dana/.ssh/id_rsa ${work}2/x /tmp${work}`), `cat ~/.ssh/id_rsa ~/Documents/deepseek-harness/default-workspace2/x /tmp${work}`)
+  assert.equal(relativeTo('rm -rf /', '/', '/'), 'rm -rf /')
+  assert.equal(relativeTo('npm test', undefined, undefined), 'npm test')
+})
+
 test('an approval outcome is read from the final result', () => {
   assert.equal(approvalOutcome({ isError: false }), 'allowed')
   assert.equal(approvalOutcome({ isError: true, error: { message: 'the user rejected tool "bash"' } }), 'rejected')
@@ -67,8 +79,11 @@ test('the system_one tool keeps its result facts for the Web UI row', async () =
 
 // A decision service that answers each reflex's questions the way the real models would for these inputs.
 function fakeDecisions() {
+  const asked = []
   const answer = (questions, state) => {
-    if (questions.angry) return { angry: { type: 'noul', noul: state.includes('!') ? 0.9 : 0.1 } }
+    asked.push(questions)
+    // like the real service, it does not answer a yes/no question that carries criteria
+    if (questions.angry) return questions.angry.criteria === undefined ? { angry: { type: 'noul', noul: state.includes('!') ? 0.9 : 0.1 } } : {}
     if (questions.kind) {
       return {
         kind: { type: 'choice', choice: 'code', confidence: 0.91, probabilities: { code: 0.91, ops: 0.05, chat: 0.04 } },
@@ -100,7 +115,7 @@ function fakeDecisions() {
         response.end(JSON.stringify({ model: body.model, answers: answer(body.questions, body.state), states }))
       })
     })
-    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}` }))
+    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, asked }))
   })
 }
 
@@ -220,7 +235,7 @@ test('the system_one tool reads relative paths in the session\'s working directo
   const { tmpdir } = await import('node:os')
   const workspace = await mkdtemp(join(tmpdir(), 's1-workspace-'))
   await writeFile(join(workspace, 'notes.txt'), 'fine\nthis is broken!\n')
-  const { server, url } = await fakeDecisions()
+  const { server, url, asked } = await fakeDecisions()
   const plugin = await import('../src/index.js')
   const { ctx, config, agent, close } = harness(url, { tool: true })
   let tool
@@ -238,6 +253,26 @@ test('the system_one tool reads relative paths in the session\'s working directo
   assert.deepEqual(value.summary.angry.yes, 1)
   assert.match(await readFile(value.output, 'utf8'), /"id":"2".*"yes":0.9/)
   assert.deepEqual(tool.output.presentationMeta({}, value), { systemOne: 1, ui: 'card', model: value.model, items: 2, questions: 1, requests: 1, seconds: value.seconds, output: value.output, summary: value.summary })
+
+  // System Two often gives a yes/no question criteria, as a choice has; they join its instructions instead
+  asked.length = 0
+  const ruled = await tool.execute({ questions: { angry: { type: 'noul', instructions: 'Is this angry?', criteria: { yes: 'shouts or uses "!"', no: 'calm' } } }, file: 'notes.txt' }, { agent })
+  assert.deepEqual(ruled.summary.angry, { type: 'noul', yes: 1, no: 1, top: [['2', 0.9], ['1', 0.1]], failed: 0 })
+  assert.deepEqual(asked[0].angry, { type: 'noul', instructions: 'Is this angry?\nyes: shouts or uses "!"\nno: calm' })
+})
+
+test('a question without a type takes the one its criteria imply', async () => {
+  const { parseQuestions } = await import('../src/tool.js')
+  const questions = parseQuestions(JSON.stringify({
+    team: { instructions: 'Which team?', criteria: { billing: 'Payments', engineering: 'Bugs' } },
+    urgency: { instructions: 'How urgent?', criteria: ['Low', 'Normal', 'Urgent'] },
+    angry: { instructions: 'Is the customer angry?' },
+    churn: { instructions: 'Will they leave?', criteria: { Yes: 'Threatens to cancel', No: 'No signal' } },
+    where: { type: 'box', instructions: 'The error dialog' },
+  }))
+  assert.deepEqual(Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, question.type])), { team: 'choice', urgency: 'score', angry: 'noul', churn: 'noul', where: 'box' })
+  assert.deepEqual(questions.churn, { type: 'noul', instructions: 'Will they leave?\nYes: Threatens to cancel\nNo: No signal' })
+  assert.throws(() => parseQuestions({ odd: { type: 'boolean', instructions: 'Is it?' } }), /question "odd" needs type choice, noul, score or box/)
 })
 
 test('systemOneUi off writes no records and keeps the reflexes working', async t => {

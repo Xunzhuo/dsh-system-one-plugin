@@ -1,7 +1,6 @@
 # @vllm-sr/dsh
 
-**System Duo** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): *Thinking, fast and slow. One
-key.*
+**System Duo** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): *Thinking, fast and slow.*
 
 An agent's LLM thinks slowly, in tokens. System One, a decision model, answers the many small questions around it in
 about half a second each, with calibrated probabilities: is this command dangerous, does this file try to give the
@@ -18,12 +17,14 @@ answers at `https://app.vllm-sr.ai/v1/systemone`, and `vllm-sr/auto` at `https:/
 ## Quick start
 
 ```bash
-npm install -g @deepseek-ai/dsh                 # DeepSeek Harness 0.2.1-rc.5 or a later 0.2 release, Node 24.9 or later
+npm install -g @deepseek-ai/dsh pnpm
 dsh plugin --profile web add @vllm-sr/dsh
 dsh web
 ```
 
-The package can also come straight from GitHub: `dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
+The first line installs DeepSeek Harness (0.2.1-rc.5 or a later 0.2 release, on Node 24.9 or later) and pnpm, which
+`dsh plugin` uses to install plugins; without pnpm, `dsh plugin add` stops with "pnpm was not found". On a machine
+with git, the package can also come straight from GitHub: `dsh plugin --profile web add github:Xunzhuo/dsh-system-one-plugin`.
 
 On its first start the plugin gets one free System Duo key, with the same small proof of work the site's "Get your
 API key" button runs in the browser, and saves it in DeepSeek Harness's credential store and in `~/.dsh/.env` (readable
@@ -75,9 +76,43 @@ the work folds, so a finished turn still shows what System One decided. Parallel
 card, and every decision pops in with a short animation the first time it appears (none with reduced motion). Each
 element shows the Decision API's own answer: the probabilities, the model and the measured latency.
 
-Every element carries `data-system-one` (`card`, `compact` or `tool`), `data-system-one-reflex` (`triage`, `guard`,
-`shield`, `done` or `tool`) and `data-system-one-verdict`, for tests and screen recordings. Set `systemOneUi` to
-`compact` for one line per decision, or to `off` to hide them.
+Set `systemOneUi` to `compact` for one line per decision, or to `off` to hide them.
+
+### Selectors
+
+For tests and screen recordings, each System One element in Chat is one root marked `data-system-one`, with stable
+attributes that say what it shows:
+
+| Attribute | Values |
+| --- | --- |
+| `data-system-one` | `card`, `compact` (one line) or `tool` (the `system_one` row) |
+| `data-system-one-reflex` | `triage`, `guard`, `shield`, `done` or `tool` |
+| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; done-check `stop` or `continue`; tool `running` or `done`; `error` when System One did not answer |
+| `data-system-one-outcome` | guard, once you answer its approval: `allowed`, `rejected`, `cancelled` or `failed` |
+| `data-system-one-why` | done-check: `complete`, `waiting`, `unfinished` or `unchecked` |
+| `data-system-one-tone` | its colour: `ok` (green), `info` (ember), `warn` (amber), `bad` (red) or `muted` |
+| `data-system-one-count` | how many decisions it holds (a batch: how many items) |
+| `data-system-one-turn`, `data-system-one-step` | where it acted (the step for guard and shield) |
+
+Inside a root, `data-system-one-part` marks `badge` (the ember **System One** pill), `latency`, `reflex`, `summary`,
+`model`, `head`, `toggle` (the button of a one-line element), `rows`, `verdict`, `outcome`, `subject`, `facts`,
+`note` and `more`, and in the batch row also `stack`, `legend`, `failed`, `results` and `raw`. Each number is a
+`data-system-one-fact`: `kind`, `effort`, `unclear` and `risky` (triage), `risk`, `leaks` and `on-task` (guard),
+`passages` and `injection` (shield), `complete`, `checked` and `waiting` (done-check). Decision rows carry
+`data-system-one-decision` and `data-system-one-call`, batch questions `data-system-one-question`. For example:
+
+| Element | Selector |
+| --- | --- |
+| Triage card | `[data-system-one-reflex="triage"]` |
+| Guard card that asked you (amber) | `[data-system-one-reflex="guard"][data-system-one-verdict="ask"]` |
+| The same card once you rejected the call (red) | `[data-system-one-reflex="guard"][data-system-one-outcome="rejected"]` |
+| Injection removed (red) | `[data-system-one-reflex="shield"][data-system-one-verdict="removed"]` |
+| A routine check (one line) | `[data-system-one="compact"][data-system-one-reflex="guard"]`, and `"shield"` |
+| Done-check | `[data-system-one-reflex="done"]` |
+| Batch row, finished | `[data-system-one="tool"][data-system-one-verdict="done"]` |
+| The ember badge, and its latency | `[data-system-one-part="badge"]`, `[data-system-one-part="latency"]` |
+| "Dangerous", and "You rejected it" | `[data-system-one-fact="risk"]`, `[data-system-one-part="outcome"]` |
+| The reason | `[data-system-one-part="note"]` |
 
 ## Your data
 

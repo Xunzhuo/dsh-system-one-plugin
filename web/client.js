@@ -171,10 +171,10 @@ window.__ModuleLoader__.load({
           verdict: 'brief', label: kindLabel, short: kindLabel.toLowerCase(), tone: 'info',
           headline: [`${kindLabel} work`, `${effortLabel.toLowerCase()} effort`, ...flags].join(' · '),
           facts: [
-            { label: 'Kind', value: `${kindLabel} ${p2(confidence)}`, bar: confidence },
-            { label: 'Effort', value: effort === undefined ? '?' : `${effortLabel} · ${effort.toFixed(1)} of 3`, bar: effort === undefined ? undefined : effort / 3 },
-            { label: 'Unclear', value: p2(unclear), bar: unclear, tone: unclear >= 0.6 ? 'warn' : undefined },
-            { label: 'Risky', value: p2(risky), bar: risky, tone: risky >= 0.5 ? 'bad' : undefined },
+            { id: 'kind', label: 'Kind', value: `${kindLabel} ${p2(confidence)}`, bar: confidence },
+            { id: 'effort', label: 'Effort', value: effort === undefined ? '?' : `${effortLabel} · ${effort.toFixed(1)} of 3`, bar: effort === undefined ? undefined : effort / 3 },
+            { id: 'unclear', label: 'Unclear', value: p2(unclear), bar: unclear, tone: unclear >= 0.6 ? 'warn' : undefined },
+            { id: 'risky', label: 'Risky', value: p2(risky), bar: risky, tone: risky >= 0.5 ? 'bad' : undefined },
           ],
           note: hints.length ? `Brief for System Two: ${hints.join(' ')}` : undefined,
         }
@@ -184,21 +184,21 @@ window.__ModuleLoader__.load({
         const outcome = OUTCOME[row.outcome]
         if (row.error) {
           const fallback = { allow: { text: 'so the call ran', tone: 'muted' }, ask: { text: 'so you were asked', tone: 'warn' }, deny: { text: 'so the call was blocked', tone: 'bad' } }[row.verdict]
-          return { ...errorView(row, fallback), outcome }
+          return { ...errorView(row, fallback), outcome, outcomeKey: outcome ? row.outcome : undefined }
         }
         const subject = { tool: row.tool, text: row.call }
         const verdict = GUARD[row.verdict]
-        if (!verdict) return { verdict: row.outcome ?? 'unknown', ...(outcome ?? { label: 'Reviewed', short: 'reviewed', tone: 'muted' }), subject, facts: [] }
+        if (!verdict) return { verdict: row.outcome ?? 'unknown', ...(outcome ?? { label: 'Reviewed', short: 'reviewed', tone: 'muted' }), outcomeKey: outcome ? row.outcome : undefined, subject, facts: [] }
         const a = row.answers ?? {}
         const risk = scoreOf(a.risk)
         const leaks = yesOf(a.exfiltration)
         const onTask = yesOf(a.on_task)
         const facts = []
-        if (risk !== undefined) facts.push({ label: 'Risk', value: `${level(RISK, Math.min(3, risk))} · ${risk.toFixed(2)} of 3`, bar: risk / 3, tone: risk >= 2.5 ? 'bad' : risk >= 1.8 ? 'warn' : 'ok' })
-        if (leaks !== undefined) facts.push({ label: 'Leaks secrets', value: p2(leaks), bar: leaks, tone: leaks >= 0.7 ? 'bad' : undefined })
-        if (onTask !== undefined) facts.push({ label: 'On task', value: p2(onTask), bar: onTask, tone: onTask < 0.15 ? 'warn' : undefined })
+        if (risk !== undefined) facts.push({ id: 'risk', label: 'Risk', value: `${level(RISK, Math.min(3, risk))} · ${risk.toFixed(2)} of 3`, bar: risk / 3, tone: risk >= 2.5 ? 'bad' : risk >= 1.8 ? 'warn' : 'ok' })
+        if (leaks !== undefined) facts.push({ id: 'leaks', label: 'Leaks secrets', value: p2(leaks), bar: leaks, tone: leaks >= 0.7 ? 'bad' : undefined })
+        if (onTask !== undefined) facts.push({ id: 'on-task', label: 'On task', value: p2(onTask), bar: onTask, tone: onTask < 0.15 ? 'warn' : undefined })
         return {
-          verdict: row.verdict, ...verdict, subject, facts, outcome, verdictTone: verdict.tone,
+          verdict: row.verdict, ...verdict, subject, facts, outcome, outcomeKey: outcome ? row.outcome : undefined, verdictTone: verdict.tone,
           tone: outcome && SEVERITY[outcome.tone] > SEVERITY[verdict.tone] ? outcome.tone : verdict.tone,
           note: row.verdict !== 'allow' && row.why ? `Because ${row.why}.` : undefined,
         }
@@ -211,8 +211,8 @@ window.__ModuleLoader__.load({
         return {
           verdict: row.verdict, ...verdict, subject: { tool: row.tool, text: row.call },
           facts: [
-            { label: 'Passages', value: String(num(row.passages) ?? '?') },
-            { label: 'Injection', value: p2(row.maxP), bar: num(row.maxP), tone: row.maxP >= 0.5 ? 'bad' : 'ok' },
+            { id: 'passages', label: 'Passages', value: String(num(row.passages) ?? '?') },
+            { id: 'injection', label: 'Injection', value: p2(row.maxP), bar: num(row.maxP), tone: row.maxP >= 0.5 ? 'bad' : 'ok' },
           ],
           note: row.verdict === 'removed' ? `Removed ${plural(lines, 'line')} that gave orders to AI agents before System Two read the result.`
             : row.verdict === 'flagged' ? `Found ${plural(lines, 'line')} that give orders to AI agents; the result was withheld.` : undefined,
@@ -226,12 +226,12 @@ window.__ModuleLoader__.load({
         const verdict = DONE[why]
         const round = `${num(row.steers) ?? '?'} of ${num(row.maxSteers) ?? '?'}`
         return {
-          verdict: row.verdict === 'continue' ? 'continue' : 'stop', ...verdict, short: verdict.label.toLowerCase(),
+          verdict: row.verdict === 'continue' ? 'continue' : 'stop', ...verdict, why, short: verdict.label.toLowerCase(),
           headline: row.verdict === 'continue' ? `${verdict.label} to System Two (${round})` : why === 'waiting' ? 'Waiting on you' : 'The work is done',
           facts: [
-            { label: 'Complete', value: p2(yesOf(a.complete)), bar: yesOf(a.complete), tone: yesOf(a.complete) < 0.5 ? 'warn' : 'ok' },
-            { label: 'Checked', value: p2(yesOf(a.checked)), bar: yesOf(a.checked) },
-            { label: 'Waiting on you', value: p2(yesOf(a.waiting)), bar: yesOf(a.waiting) },
+            { id: 'complete', label: 'Complete', value: p2(yesOf(a.complete)), bar: yesOf(a.complete), tone: yesOf(a.complete) < 0.5 ? 'warn' : 'ok' },
+            { id: 'checked', label: 'Checked', value: p2(yesOf(a.checked)), bar: yesOf(a.checked) },
+            { id: 'waiting', label: 'Waiting on you', value: p2(yesOf(a.waiting)), bar: yesOf(a.waiting) },
           ],
           note: why === 'unfinished' ? `Not finished yet, so System Two goes back to work (${round}).`
             : why === 'unchecked' ? `The changes were not checked, so System Two goes back to verify them (${round}).` : undefined,
@@ -273,7 +273,7 @@ window.__ModuleLoader__.load({
         const label = view.outcome ? `${view.label} → ${view.outcome.label}` : view.label
         const rest = []
         if (view.subject?.text) rest.push(`${view.subject.tool ?? ''} ${view.subject.text}`.trim())
-        const lead = view.facts.find(fact => fact.label === 'Risk' || fact.label === 'Injection' || fact.label === 'Complete' || fact.label === 'Effort')
+        const lead = view.facts.find(fact => ['risk', 'injection', 'complete', 'effort'].includes(fact.id))
         if (lead) rest.push(`${lead.label.toLowerCase()} ${lead.value}`)
         if (view.error) rest.push(view.error)
         return { label, tone: view.tone, rest: rest.join(' · ') }
@@ -313,18 +313,18 @@ window.__ModuleLoader__.load({
 
       function Badge({ id, ms, time }) {
         const fresh = useFresh(`badge:${id}`, time)
-        return h('span', { className: cx('vsr-s1__badge', fresh && 'vsr-s1__badge--fresh') },
+        return h('span', { className: cx('vsr-s1__badge', fresh && 'vsr-s1__badge--fresh'), 'data-system-one-part': 'badge' },
           h('i', { className: 'vsr-s1__dot', 'aria-hidden': true }),
           h('span', { className: 'vsr-s1__name' }, 'System One'),
-          secs(ms) ? h('span', { className: 'vsr-s1__ms' }, secs(ms)) : null)
+          secs(ms) ? h('span', { className: 'vsr-s1__ms', 'data-system-one-part': 'latency' }, secs(ms)) : null)
       }
 
-      function Pill({ tone, children, arrow }) {
-        return h('span', { className: cx('vsr-s1__pill', `vsr-s1__pill--${tone}`, arrow && 'vsr-s1__pill--then') }, children)
+      function Pill({ tone, children, arrow, part }) {
+        return h('span', { className: cx('vsr-s1__pill', `vsr-s1__pill--${tone}`, arrow && 'vsr-s1__pill--then'), 'data-system-one-part': part }, children)
       }
 
-      function Fact({ label, value, bar, tone }) {
-        return h('span', { className: 'vsr-s1__fact' },
+      function Fact({ id, label, value, bar, tone }) {
+        return h('span', { className: 'vsr-s1__fact', 'data-system-one-fact': id },
           h('span', { className: 'vsr-s1__fact-label' }, label),
           num(bar) === undefined ? null : h('span', { className: cx('vsr-s1__bar', tone && `vsr-s1__bar--${tone}`), style: { '--p': clamp01(bar) }, 'aria-hidden': true }, h('i')),
           h('b', null, value))
@@ -335,34 +335,43 @@ window.__ModuleLoader__.load({
         return h('div', {
           className: cx('vsr-s1__row', fresh && 'vsr-s1__row--fresh'),
           'data-system-one-decision': view.verdict,
+          'data-system-one-outcome': view.outcomeKey,
           'data-system-one-call': row.callId,
         },
         h('span', { className: 'vsr-s1__verdicts' },
-          h(Pill, { tone: view.verdictTone ?? view.tone }, view.label),
-          view.outcome ? h(Pill, { tone: view.outcome.tone, arrow: true }, view.outcome.label) : null),
+          h(Pill, { tone: view.verdictTone ?? view.tone, part: 'verdict' }, view.label),
+          view.outcome ? h(Pill, { tone: view.outcome.tone, arrow: true, part: 'outcome' }, view.outcome.label) : null),
         h('div', { className: 'vsr-s1__main' },
-          view.subject?.text ? h('div', { className: 'vsr-s1__subject' },
+          view.subject?.text ? h('div', { className: 'vsr-s1__subject', 'data-system-one-part': 'subject' },
             view.subject.tool ? h('span', { className: 'vsr-s1__tool' }, view.subject.tool) : null,
             h('code', { className: 'vsr-s1__code', title: view.subject.text }, view.subject.text)) : null,
-          view.facts.length ? h('div', { className: 'vsr-s1__facts' }, view.facts.map(fact => h(Fact, { key: fact.label, ...fact }))) : null,
-          view.note ? h('div', { className: 'vsr-s1__note' }, view.note) : null),
-        !single && secs(row.ms) ? h('span', { className: 'vsr-s1__rowms' }, secs(row.ms)) : null)
+          view.facts.length ? h('div', { className: 'vsr-s1__facts', 'data-system-one-part': 'facts' }, view.facts.map(fact => h(Fact, { key: fact.id, ...fact }))) : null,
+          view.note ? h('div', { className: 'vsr-s1__note', 'data-system-one-part': 'note' }, view.note) : null),
+        !single && secs(row.ms) ? h('span', { className: 'vsr-s1__rowms', 'data-system-one-part': 'latency' }, secs(row.ms)) : null)
       }
 
       function Rows({ reflex, rows, views }) {
         const [all, setAll] = React.useState(false)
         const hidden = all ? 0 : Math.max(0, rows.length - ROWS_SHOWN)
-        return h('div', { className: 'vsr-s1__rows' },
-          hidden > 0 ? h('button', { type: 'button', className: 'vsr-s1__more', onClick: () => setAll(true) }, `Show ${plural(hidden, `earlier ${reflex === 'guard' ? 'call' : 'result'}`)}`) : null,
+        return h('div', { className: 'vsr-s1__rows', 'data-system-one-part': 'rows' },
+          hidden > 0 ? h('button', { type: 'button', className: 'vsr-s1__more', 'data-system-one-part': 'more', onClick: () => setAll(true) }, `Show ${plural(hidden, `earlier ${reflex === 'guard' ? 'call' : 'result'}`)}`) : null,
           rows.slice(hidden).map((row, index) => h(Row, { key: idOf(row), row, view: views[hidden + index], single: rows.length === 1 })))
       }
 
-      function attributes(kind, state, views, worst) {
+      const whole = value => (Number.isSafeInteger(value) ? String(value) : undefined)
+
+      // a public contract (README.md, "Selectors"); React leaves out an attribute whose value is undefined
+      function attributes(kind, state, worst) {
         return {
           'data-system-one': kind,
           'data-system-one-reflex': state.reflex,
           'data-system-one-verdict': worst.verdict,
+          'data-system-one-outcome': worst.outcomeKey,
+          'data-system-one-why': worst.why,
+          'data-system-one-tone': worst.tone,
           'data-system-one-count': String(state.rows.length),
+          'data-system-one-turn': whole(state.rows[0].turn),
+          'data-system-one-step': state.reflex === 'guard' || state.reflex === 'shield' ? whole(state.rows[0].step) : undefined,
         }
       }
 
@@ -377,14 +386,14 @@ window.__ModuleLoader__.load({
           className: cx('vsr-s1', 'vsr-s1--card', `vsr-s1--${worst.tone}`, fresh && 'vsr-s1--fresh'),
           role: 'group',
           'aria-label': `System One ${reflex}: ${headline}`,
-          ...attributes('card', state, views, worst),
+          ...attributes('card', state, worst),
         },
         h('span', { className: 'vsr-s1__sheen', 'aria-hidden': true }),
-        h('div', { className: 'vsr-s1__head' },
+        h('div', { className: 'vsr-s1__head', 'data-system-one-part': 'head' },
           h(Badge, { key: idOf(last), id: idOf(last), ms: last.ms, time: last.time }),
-          h('span', { className: 'vsr-s1__reflex' }, reflex),
-          h('span', { className: 'vsr-s1__summary', title: headline }, headline),
-          last.model ? h('span', { className: 'vsr-s1__model', title: last.model }, shortModel(last.model)) : null),
+          h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, reflex),
+          h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+          last.model ? h('span', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: last.model }, shortModel(last.model)) : null),
         h(Rows, { reflex: state.reflex, rows: state.rows, views }))
       }
 
@@ -406,13 +415,13 @@ window.__ModuleLoader__.load({
           className: cx('vsr-s1', 'vsr-s1--compact', `vsr-s1--${worst.tone}`, open && 'vsr-s1--open', fresh && 'vsr-s1--fresh'),
           role: 'group',
           'aria-label': `System One ${reflex}: ${said}`,
-          ...attributes('compact', state, views, worst),
+          ...attributes('compact', state, worst),
         },
-        h('button', { type: 'button', className: 'vsr-s1__chip', 'aria-expanded': open, onClick: () => setOpen(!open) },
+        h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
           h(Badge, { key: idOf(last), id: idOf(last), ms: last.ms, time: last.time }),
-          h('span', { className: 'vsr-s1__reflex' }, reflex),
-          h('span', { className: 'vsr-s1__summary', title: said },
-            h('span', { className: cx('vsr-s1__verdict', line.tone && `vsr-s1__verdict--${line.tone}`) }, line.label),
+          h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, reflex),
+          h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: said },
+            h('span', { className: cx('vsr-s1__verdict', line.tone && `vsr-s1__verdict--${line.tone}`), 'data-system-one-part': 'verdict' }, line.label),
             line.rest ? ` · ${line.rest}` : null),
           h(Chevron)),
         open ? h(Rows, { reflex: state.reflex, rows: state.rows, views }) : null)
@@ -455,7 +464,7 @@ window.__ModuleLoader__.load({
 
       function Stack({ parts, fresh }) {
         const total = parts.reduce((sum, part) => sum + part.n, 0)
-        return h('span', { className: cx('vsr-s1__stack', fresh && 'vsr-s1__stack--fresh'), 'aria-hidden': true },
+        return h('span', { className: cx('vsr-s1__stack', fresh && 'vsr-s1__stack--fresh'), 'data-system-one-part': 'stack', 'aria-hidden': true },
           total > 0 ? parts.filter(part => part.n > 0).map((part, index) => h('i', { key: part.label, style: { flexGrow: part.n, background: part.color, animationDelay: `${0.12 + index * 0.06}s` } })) : null)
       }
 
@@ -463,12 +472,13 @@ window.__ModuleLoader__.load({
       const LABEL_CHARS = 28
       const shortLabel = label => (label.length > LABEL_CHARS ? `${label.slice(0, LABEL_CHARS - 1).trimEnd()}…` : label)
 
-      function Legend({ parts, extra }) {
-        return h('span', { className: 'vsr-s1__legend' },
+      function Legend({ parts, extra, failed }) {
+        return h('span', { className: 'vsr-s1__legend', 'data-system-one-part': 'legend' },
           parts.map(part => h('span', { key: part.label, className: 'vsr-s1__key', title: `${part.label}: ${part.n}` },
             h('i', { className: 'vsr-s1__swatch', style: { background: part.color } }),
             `${shortLabel(part.label)} `, h('b', null, String(part.n)))),
-          extra ? h('span', { className: 'vsr-s1__key vsr-s1__key--note' }, extra) : null)
+          extra ? h('span', { className: 'vsr-s1__key vsr-s1__key--note' }, extra) : null,
+          failed ? h('span', { className: 'vsr-s1__key vsr-s1__key--bad', 'data-system-one-part': 'failed' }, `${failed} failed`) : null)
       }
 
       function questionParts(summary) {
@@ -501,14 +511,14 @@ window.__ModuleLoader__.load({
           h('code', { className: 'vsr-s1__qname', title: id }, id),
           h('div', { className: 'vsr-s1__qbody' },
             parts.length ? h(Stack, { parts, fresh }) : null,
-            h(Legend, { parts, extra: [extra, summary?.failed ? `${summary.failed} failed` : undefined].filter(Boolean).join(' · ') || undefined })))
+            h(Legend, { parts, extra, failed: num(summary?.failed) || undefined })))
       }
 
       function ToolBody({ meta, fresh, cwd, openFile }) {
         const entries = Object.entries(meta.summary ?? {})
-        return h('div', { className: 'vsr-s1__rows' },
+        return h('div', { className: 'vsr-s1__rows', 'data-system-one-part': 'rows' },
           entries.map(([id, summary]) => h(Question, { key: id, id, summary, fresh })),
-          meta.output ? h('div', { className: 'vsr-s1__foot' },
+          meta.output ? h('div', { className: 'vsr-s1__foot', 'data-system-one-part': 'results' },
             'Results ',
             typeof openFile === 'function'
               ? h('button', { type: 'button', className: 'vsr-s1__link', onClick: () => openFile(meta.output) }, relative(meta.output, cwd))
@@ -524,36 +534,40 @@ window.__ModuleLoader__.load({
         const [open, setOpen] = React.useState(false)
         const source = args.file ? basename(args.file) : Array.isArray(args.images) ? plural(args.images.length, 'image') : Array.isArray(args.items) ? plural(args.items.length, 'item') : ''
         const asked = questionCount(args.questions)
-        const common = { 'data-system-one': 'tool', 'data-system-one-reflex': 'tool', 'data-system-one-call': callId }
+        const common = { 'data-system-one-reflex': 'tool', 'data-system-one-call': callId }
 
         if (phase !== 'result') {
           const line = phase === 'preparing' ? 'Preparing a batch' : `Answering ${plural(asked, 'question')}${source ? ` over ${source}` : ''}`
-          return h('div', { className: 'vsr-s1 vsr-s1--compact vsr-s1--running', ...common, 'data-system-one-verdict': 'running' },
+          return h('div', { className: 'vsr-s1 vsr-s1--compact vsr-s1--running', 'data-system-one': 'tool', ...common, 'data-system-one-verdict': 'running', 'data-system-one-tone': 'info' },
             h('div', { className: 'vsr-s1__chip vsr-s1__chip--static' },
               h(Badge, { id: `${callId}:running`, time: Date.now() }),
-              h('span', { className: 'vsr-s1__reflex' }, REFLEX.tool),
-              h('span', { className: 'vsr-s1__summary vsr-s1__shimmer' }, line)))
+              h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
+              h('span', { className: 'vsr-s1__summary vsr-s1__shimmer', 'data-system-one-part': 'summary' }, line)))
         }
 
         if (block?.isError || !meta || ui === 'off') {
           const body = resultText(block)
           const first = body.split('\n')[0] || (block?.isError ? 'The batch failed' : 'Done')
-          return h('div', { className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--plain', block?.isError && 'vsr-s1--bad', open && 'vsr-s1--open'), ...common, 'data-system-one-verdict': block?.isError ? 'error' : 'done' },
-            h('button', { type: 'button', className: 'vsr-s1__chip', 'aria-expanded': open, onClick: () => setOpen(!open) },
-              h('span', { className: 'vsr-s1__reflex' }, 'System One'),
-              h('span', { className: cx('vsr-s1__summary', block?.isError && 'vsr-s1__summary--bad'), title: first }, first),
-              h(Chevron)),
-            open ? h('pre', { className: 'vsr-s1__raw' }, body) : null)
+          return h('div', {
+            className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--plain', block?.isError && 'vsr-s1--bad', open && 'vsr-s1--open'),
+            'data-system-one': 'tool', ...common, 'data-system-one-verdict': block?.isError ? 'error' : 'done', 'data-system-one-tone': block?.isError ? 'bad' : 'muted',
+          },
+          h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
+            h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, 'System One'),
+            h('span', { className: cx('vsr-s1__summary', block?.isError && 'vsr-s1__summary--bad'), 'data-system-one-part': 'summary', title: first }, first),
+            h(Chevron)),
+          open ? h('pre', { className: 'vsr-s1__raw', 'data-system-one-part': 'raw' }, body) : null)
         }
 
         const ms = num(meta.seconds) === undefined ? undefined : meta.seconds * 1000
         const headline = [plural(num(meta.items) ?? 0, 'item'), plural(num(meta.questions) ?? 0, 'question'), plural(num(meta.requests) ?? 0, 'request')].join(' · ')
+        const done = { ...common, 'data-system-one-verdict': 'done', 'data-system-one-tone': 'ok', 'data-system-one-count': String(meta.items ?? '') }
         if (ui === 'compact') {
-          return h('div', { className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--ok', open && 'vsr-s1--open', fresh && 'vsr-s1--fresh'), ...common, 'data-system-one-verdict': 'done', 'data-system-one-count': String(meta.items ?? '') },
-            h('button', { type: 'button', className: 'vsr-s1__chip', 'aria-expanded': open, onClick: () => setOpen(!open) },
+          return h('div', { className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--ok', open && 'vsr-s1--open', fresh && 'vsr-s1--fresh'), 'data-system-one': 'tool', ...done },
+            h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
               h(Badge, { id: `${callId}:done`, ms, time: block?.time }),
-              h('span', { className: 'vsr-s1__reflex' }, REFLEX.tool),
-              h('span', { className: 'vsr-s1__summary', title: headline }, headline),
+              h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
+              h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
               h(Chevron)),
             open ? h(ToolBody, { meta, fresh, cwd, openFile }) : null)
         }
@@ -561,16 +575,15 @@ window.__ModuleLoader__.load({
           className: cx('vsr-s1', 'vsr-s1--card', 'vsr-s1--ok', 'vsr-s1--tool', fresh && 'vsr-s1--fresh'),
           role: 'group',
           'aria-label': `System One batch: ${headline}`,
-          ...common,
-          'data-system-one-verdict': 'done',
-          'data-system-one-count': String(meta.items ?? ''),
+          'data-system-one': 'tool',
+          ...done,
         },
         h('span', { className: 'vsr-s1__sheen', 'aria-hidden': true }),
-        h('div', { className: 'vsr-s1__head' },
+        h('div', { className: 'vsr-s1__head', 'data-system-one-part': 'head' },
           h(Badge, { id: `${callId}:done`, ms, time: block?.time }),
-          h('span', { className: 'vsr-s1__reflex' }, REFLEX.tool),
-          h('span', { className: 'vsr-s1__summary', title: headline }, headline),
-          meta.model ? h('span', { className: 'vsr-s1__model', title: meta.model }, shortModel(meta.model)) : null),
+          h('span', { className: 'vsr-s1__reflex', 'data-system-one-part': 'reflex' }, REFLEX.tool),
+          h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: headline }, headline),
+          meta.model ? h('span', { className: 'vsr-s1__model', 'data-system-one-part': 'model', title: meta.model }, shortModel(meta.model)) : null),
         h(ToolBody, { meta, fresh, cwd, openFile }))
       }
 
@@ -631,14 +644,15 @@ window.__ModuleLoader__.load({
 .vsr-s1--plain .vsr-s1__reflex{color:var(--vsr-s1-text-2)}
 .vsr-s1__raw{margin:4px 0 8px;padding:8px 10px;max-height:320px;overflow:auto;border-radius:8px;background:color-mix(in srgb,var(--vsr-s1-text-3) 10%,transparent);font-family:var(--vsr-s1-mono);font-size:12px;white-space:pre-wrap}
 .vsr-s1__q{display:grid;grid-template-columns:minmax(80px,140px) minmax(0,1fr);column-gap:14px;align-items:start}
-.vsr-s1__qname{overflow:hidden;color:var(--vsr-s1-text);font-family:var(--vsr-s1-mono);font-size:12.5px;line-height:10px;white-space:nowrap;text-overflow:ellipsis;background:none;padding:0}
+.vsr-s1__qname{overflow:hidden;color:var(--vsr-s1-text);font-family:var(--vsr-s1-mono);font-size:12.5px;line-height:16px;white-space:nowrap;text-overflow:ellipsis;background:none;padding:0}
 .vsr-s1__qbody{display:grid;gap:4px;min-width:0}
-.vsr-s1__stack{display:flex;gap:2px;height:8px;border-radius:4px;overflow:hidden;background:var(--vsr-s1-track)}
+.vsr-s1__stack{display:flex;gap:2px;height:8px;margin-top:4px;border-radius:4px;overflow:hidden;background:var(--vsr-s1-track)}
 .vsr-s1__stack>i{display:block;min-width:3px;height:100%;transform-origin:left center}
 .vsr-s1__legend{display:flex;flex-wrap:wrap;gap:1px 14px;color:var(--vsr-s1-text-2);font-size:12.5px}
 .vsr-s1__key{display:inline-flex;align-items:center;white-space:nowrap}
 .vsr-s1__key b{margin-left:4px;color:var(--vsr-s1-text);font-weight:600;font-variant-numeric:tabular-nums}
 .vsr-s1__key--note{color:var(--vsr-s1-text-3)}
+.vsr-s1__key--bad{color:var(--vsr-s1-bad);font-weight:600}
 .vsr-s1__swatch{flex:none;width:8px;height:8px;margin-right:6px;border-radius:2px}
 .vsr-s1__foot{color:var(--vsr-s1-text-3);font-size:12.5px}
 .vsr-s1__foot code{font-family:var(--vsr-s1-mono)}

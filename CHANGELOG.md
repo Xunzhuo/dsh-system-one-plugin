@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.1 (2026-11-04)
+
+- The install lines work on a clean machine. `dsh plugin add` installs plugins with pnpm, and Node 26, the current
+  LTS, has no corepack to provide it, so the old first line left `dsh plugin add` stopping with "pnpm was not found".
+  The first line now installs pnpm beside DeepSeek Harness: `npm install -g @deepseek-ai/dsh pnpm`. Checked in fresh
+  Node 26 containers without pnpm, with and without git.
+- Stable selectors for tests and screen recordings, listed in the README under "Selectors". Each element's root also
+  carries `data-system-one-outcome` (your answer to a guard's approval), `data-system-one-why` (the done-check's
+  reason), `data-system-one-tone` (its colour), `data-system-one-turn` and `data-system-one-step`. Inside it,
+  `data-system-one-part` marks the badge, the latency, the verdict and outcome pills, the reason and the other parts,
+  and `data-system-one-fact` marks each number.
+- A card shows a call relative to the session's working directory, with the home directory as `~`: a guard line reads
+  `bash cd orders-api && git reset --hard v1.3`, not the workspace's full path before the command.
+- The batch row: question names keep their descenders, and a question's failed items show in red.
+- The `system_one` tool takes the questions System Two writes on its first try. A question without a type takes the one
+  its criteria imply (named options: `choice`; a list of levels: `score`; none, or yes and no: `noul`) instead of
+  failing the call. A yes/no question written with criteria, as a choice has, kept no answer: the Decision API does
+  not answer a `noul` question that carries criteria, so every item failed ("230 failed"). Its criteria now join its
+  instructions, and the tool's description says a yes/no question takes none.
+- The README's tagline and the package description no longer pitch "One key".
+
 ## 0.4.0 (2026-11-04)
 
 System One shows up in the Web UI's Chat, where it acts.

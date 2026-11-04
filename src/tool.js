@@ -12,20 +12,38 @@ You write the rubric as questions; System One answers every question for every i
 
 Question types:
 - "choice": pick one option. criteria: an object of option name -> short description (2 or more options).
-- "noul": yes or no. The answer is the probability of yes.
+- "noul": yes or no, with no criteria: say in the instructions what counts as yes. The answer is the probability of yes.
 - "score": an ordered scale. criteria: a list of level descriptions, lowest first (2 to 10). The answer is the expected level (0 = first).
 - "box": where something is in an image (images only); instructions name the target.
 
 Example questions: {"team": {"type": "choice", "instructions": "Which team should handle this ticket?", "criteria": {"billing": "Payments, invoices, refunds", "engineering": "Bugs, errors, outages", "sales": "Plans and pricing"}}, "urgency": {"type": "score", "instructions": "How urgent is this ticket?", "criteria": ["Low", "Normal", "Urgent"]}, "angry": {"type": "noul", "instructions": "Is the customer angry?"}}`
 
-function parseQuestions(value) {
+/** The type a question's criteria imply: a list of levels is a score, named options a choice, anything else yes/no. */
+function impliedType(criteria) {
+  if (Array.isArray(criteria)) return 'score'
+  if (!criteria || typeof criteria !== 'object') return 'noul'
+  return Object.keys(criteria).map(name => name.toLowerCase()).sort().join() === 'no,yes' ? 'noul' : 'choice'
+}
+
+export function parseQuestions(value) {
   const questions = typeof value === 'string' ? JSON.parse(value) : value
   if (!questions || typeof questions !== 'object' || Array.isArray(questions) || Object.keys(questions).length === 0) {
     throw new Error('questions must be an object of question id -> {type, instructions, criteria}')
   }
-  for (const [id, question] of Object.entries(questions)) {
+  for (const [id, asked] of Object.entries(questions)) {
+    // System Two often leaves the type out of its first call
+    const question = asked && typeof asked === 'object' && asked.type === undefined ? { ...asked, type: impliedType(asked.criteria) } : asked
+    questions[id] = question
     if (!['choice', 'noul', 'score', 'box'].includes(question?.type)) throw new Error(`question "${id}" needs type choice, noul, score or box`)
     if (typeof question.instructions !== 'string' || !question.instructions.trim()) throw new Error(`question "${id}" needs instructions`)
+    // the Decision API does not answer a noul question that carries criteria
+    if (question.type === 'noul' && question.criteria !== undefined) {
+      const { criteria, ...rest } = question
+      const rules = typeof criteria === 'string' ? [criteria]
+        : Array.isArray(criteria) ? criteria.map(String)
+          : criteria && typeof criteria === 'object' ? Object.entries(criteria).map(([name, rule]) => `${name}: ${rule}`) : []
+      questions[id] = { ...rest, instructions: [rest.instructions.trim(), ...rules].join('\n') }
+    }
   }
   return questions
 }

@@ -165,6 +165,54 @@ test('a guard card names the call, the risk and the verdict, and takes in your a
   assert.deepEqual(findAll(tree, props => props['data-system-one-decision']).map(row => [row.props['data-system-one-decision'], row.props['data-system-one-call']]), [['allow', 'c1'], ['ask', 'c2']])
 })
 
+const attrs = (element, names) => Object.fromEntries(names.map(name => [name, element.props[`data-system-one${name ? `-${name}` : ''}`]]))
+const parts = tree => findAll(tree, props => props['data-system-one-part']).map(element => element.props['data-system-one-part'])
+const ROOT = ['', 'reflex', 'verdict', 'outcome', 'why', 'tone', 'count', 'turn', 'step']
+
+test('every element carries the selectors README.md documents', () => {
+  const { exports } = load()
+  const [guard, shield, routine, done, triage] = assemble(exports.definition, [
+    record({ reflex: 'guard', step: 4, callId: 'c2', tool: 'bash', call: 'git reset --hard v1.3', answers: guardAnswers(2.0), verdict: 'ask', why: 'its risk is Dangerous' }),
+    record({ reflex: 'guard', step: 4, callId: 'c2', tool: 'bash', call: 'git reset --hard v1.3', outcome: 'rejected' }),
+    record({ reflex: 'shield', step: 3, callId: 'c1', tool: 'read', call: 'invoicekit/README.md', passages: 2, flagged: 1, removedLines: 6, maxP: 1, verdict: 'removed' }),
+    record({ reflex: 'guard', step: 5, callId: 'c3', tool: 'bash', call: 'ls', answers: guardAnswers(0.4), verdict: 'allow' }),
+    record({ reflex: 'done', answers: { complete: { yes: 0.02 }, checked: { yes: 0.5 }, waiting: { yes: 1 } }, verdict: 'stop', why: 'waiting' }),
+    record({ reflex: 'triage', turn: 2, step: 1, answers: { kind: { choice: 'ops', confidence: 1 }, effort: { score: 1 }, unclear: { yes: 0 }, risky: { yes: 0.9 } }, hints: ['Be careful.'] }),
+  ])
+
+  const asked = render(exports.SystemOneNode({ node: guard }))
+  const [card] = findAll(asked, props => props['data-system-one'])
+  assert.deepEqual(attrs(card, ROOT), { '': 'card', reflex: 'guard', verdict: 'ask', outcome: 'rejected', why: undefined, tone: 'bad', count: '1', turn: '1', step: '4' })
+  assert.deepEqual(parts(asked), ['head', 'badge', 'latency', 'reflex', 'summary', 'model', 'rows', 'verdict', 'outcome', 'subject', 'facts', 'note'])
+  assert.deepEqual(findAll(asked, props => props['data-system-one-fact']).map(fact => fact.props['data-system-one-fact']), ['risk', 'leaks', 'on-task'])
+  const [row] = findAll(asked, props => props['data-system-one-decision'])
+  assert.deepEqual([row.props['data-system-one-decision'], row.props['data-system-one-outcome'], row.props['data-system-one-call']], ['ask', 'rejected', 'c2'])
+  assert.equal(textOf(findAll(asked, props => props['data-system-one-part'] === 'outcome')[0]), 'You rejected it')
+  assert.ok(textOf(findAll(asked, props => props['data-system-one-fact'] === 'risk')[0]).includes('Dangerous'))
+
+  const [injection] = findAll(render(exports.SystemOneNode({ node: shield })), props => props['data-system-one'])
+  assert.deepEqual(attrs(injection, ROOT), { '': 'card', reflex: 'shield', verdict: 'removed', outcome: undefined, why: undefined, tone: 'bad', count: '1', turn: '1', step: '3' })
+
+  const line = render(exports.SystemOneNode({ node: routine }))
+  assert.deepEqual(attrs(findAll(line, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'tone']), { '': 'compact', reflex: 'guard', verdict: 'allow', tone: 'ok' })
+  assert.deepEqual(parts(line), ['toggle', 'badge', 'latency', 'reflex', 'summary', 'verdict'])
+
+  const doneTree = render(exports.SystemOneNode({ node: done }))
+  assert.deepEqual(attrs(findAll(doneTree, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'why', 'tone', 'step']), { '': 'card', reflex: 'done', verdict: 'stop', why: 'waiting', tone: 'info', step: undefined })
+  assert.deepEqual(findAll(doneTree, props => props['data-system-one-fact']).map(fact => fact.props['data-system-one-fact']), ['complete', 'checked', 'waiting'])
+
+  const triageTree = render(exports.SystemOneNode({ node: triage }))
+  assert.deepEqual(attrs(findAll(triageTree, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'turn']), { '': 'card', reflex: 'triage', verdict: 'brief', turn: '2' })
+  assert.deepEqual(findAll(triageTree, props => props['data-system-one-fact']).map(fact => fact.props['data-system-one-fact']), ['kind', 'effort', 'unclear', 'risky'])
+
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  const selectors = readme.slice(readme.indexOf('### Selectors'), readme.indexOf('## Your data'))
+  const drawn = new Set([...SOURCE.matchAll(/(?:'data-system-one-part'|\bpart): '([a-z-]+)'/g), ...SOURCE.matchAll(/\bid: '([a-z-]+)', label:/g)].map(match => match[1]))
+  assert.ok(drawn.size >= 30)
+  for (const value of drawn) assert.ok(selectors.includes(`\`${value}\``), `README.md documents ${value}`)
+  for (const [, value] of selectors.matchAll(/data-system-one-(?:part|fact)="([a-z-]+)"/g)) assert.ok(drawn.has(value), `${value} is drawn by web/client.js`)
+})
+
 test('triage, shield and done-check cards say what System One decided', () => {
   const { exports } = load()
   const nodes = assemble(exports.definition, [
@@ -211,23 +259,29 @@ test('the system_one row draws the batch from its result, and its progress while
     summary: {
       team: { type: 'choice', counts: { billing: 61, engineering: 58, sales: 41, success: 38, security: 32 }, unsure: [], unsureCount: 9, failed: 0 },
       urgency: { type: 'score', mean: 2.4, levels: { Low: 80, Normal: 110, Urgent: 40 }, top: [], failed: 0 },
-      churn_risk: { type: 'noul', yes: 37, no: 193, top: [], failed: 0 },
+      churn_risk: { type: 'noul', yes: 37, no: 190, top: [], failed: 3 },
     },
   }
   const opened = []
   const props = { callId: 'call-7', toolName: 'system_one', cwd: '/work', openFile: path => opened.push(path), phase: 'result', block: { time: Date.now(), isError: false, content: [{ type: 'text', text: 'System One answered...' }], meta, call: { name: 'system_one', argsRaw: '{"file":"support/tickets.jsonl"}' } } }
   const tree = render(exports.SystemOneToolRow(props))
   const text = textOf(tree)
-  for (const expected of ['System One', '4.12 s', 'Batch', '230 items · 3 questions · 26 requests', 'team', 'billing', '61', '9 unsure', 'urgency', 'mean 2.4', 'churn_risk', 'yes', '193', 'support/tickets.s1.jsonl']) {
+  for (const expected of ['System One', '4.12 s', 'Batch', '230 items · 3 questions · 26 requests', 'team', 'billing', '61', '9 unsure', 'urgency', 'mean 2.4', 'churn_risk', 'yes', '190', '3 failed', 'support/tickets.s1.jsonl']) {
     assert.ok(text.includes(expected), `${expected} in ${text}`)
   }
   findAll(tree, props => props.className === 'vsr-s1__link')[0].props.onClick()
   assert.deepEqual(opened, ['/work/support/tickets.s1.jsonl'])
+  const root = tree => findAll(tree, props => props['data-system-one'])[0]
+  assert.deepEqual(attrs(root(tree), ['', 'reflex', 'verdict', 'tone', 'count', 'call']), { '': 'tool', reflex: 'tool', verdict: 'done', tone: 'ok', count: '230', call: 'call-7' })
+  assert.deepEqual(findAll(tree, props => props['data-system-one-question']).map(question => question.props['data-system-one-question']), ['team', 'urgency', 'churn_risk'])
+  for (const part of ['head', 'badge', 'latency', 'model', 'stack', 'legend', 'failed', 'results']) assert.ok(parts(tree).includes(part), `part ${part}`)
+  assert.match(findAll(tree, props => props['data-system-one-part'] === 'failed')[0].props.className, /vsr-s1__key--bad/)
 
-  const running = textOf(render(exports.SystemOneToolRow({ ...props, phase: 'start', block: { argsRaw: '{"file":"support/tickets.jsonl","questions":{"team":{},"urgency":{},"churn_risk":{}}}' } })))
-  assert.ok(running.includes('Answering 3 questions over tickets.jsonl'), running)
+  const running = render(exports.SystemOneToolRow({ ...props, phase: 'start', block: { argsRaw: '{"file":"support/tickets.jsonl","questions":{"team":{},"urgency":{},"churn_risk":{}}}' } }))
+  assert.ok(textOf(running).includes('Answering 3 questions over tickets.jsonl'), textOf(running))
+  assert.deepEqual(attrs(root(running), ['', 'verdict']), { '': 'tool', verdict: 'running' })
 
   const failed = render(exports.SystemOneToolRow({ ...props, block: { ...props.block, isError: true, meta: undefined, content: [{ type: 'text', text: 'Error: questions must be an object' }] } }))
   assert.ok(textOf(failed).includes('Error: questions must be an object'))
-  assert.equal(findAll(failed, props => props['data-system-one-verdict'] === 'error').length, 1)
+  assert.deepEqual(attrs(root(failed), ['', 'verdict', 'tone']), { '': 'tool', verdict: 'error', tone: 'bad' })
 })

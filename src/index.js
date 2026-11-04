@@ -21,7 +21,7 @@ import * as dshSession from '@deepseek-ai/dsh-session'
 import { createDecisionClient, compactAnswer, yes } from './client.js'
 import { SERVICES, appendDotenv, ensureKeys, readDotenv } from './keys.js'
 import { DONE, EFFORT_LEVELS, GUARD, RISK_LEVELS, TRIAGE } from './questions.js'
-import { UI_MODES, approvalOutcome, createRecorder, subject } from './records.js'
+import { UI_MODES, approvalOutcome, createRecorder, relativeTo, subject } from './records.js'
 import { screen } from './shield.js'
 import { systemOneTool } from './tool.js'
 import { clip, createTrace } from './trace.js'
@@ -335,12 +335,13 @@ export function apply(ctx, config) {
     ctx.on('tools/pre-execute', async (exec, next) => {
       if (!gated.has(exec.name) || !exec.agent) return next()
       const state = sessionState(exec.agent)
+      const workspace = await workspaceOf(exec)
       const situation = [
         `The user asked the agent:\n"""${clip(state?.user || '(unknown)', 1500)}"""`,
-        `Workspace: ${await workspaceOf(exec)}`,
+        `Workspace: ${workspace}`,
         `The agent now wants to run:\n${describeCall(exec)}`,
       ].join('\n\n')
-      const base = { reflex: 'guard', turn: state?.turn, step: state?.step, callId: exec.callId, tool: exec.name, call: subject(briefCall(exec)) }
+      const base = { reflex: 'guard', turn: state?.turn, step: state?.step, callId: exec.callId, tool: exec.name, call: subject(relativeTo(briefCall(exec), workspace, homedir())) }
       let response
       try {
         response = await client.ask({ model: config.model, questions: GUARD, inputs: [{ state: situation }], signal: exec.signal, timeoutMs: config.hookTimeoutMs, retries: config.hookRetries })
@@ -414,7 +415,7 @@ export function apply(ctx, config) {
       const tail = text.slice(screened.length)
       const where = exec.name === 'web_fetch' ? `a web page (${exec.arguments?.url})` : exec.name === 'read' ? `the file ${exec.arguments?.file_path}` : `the output of: ${clip(exec.arguments?.command, 200)}`
       const prefix = `The user asked the agent: "${clip(state?.user || '(unknown)', 300)}"\nThe agent just read this passage from ${where}:`
-      const base = { reflex: 'shield', turn: state?.turn, step: state?.step, callId: exec.callId, tool: exec.name, call: subject(briefCall(exec)) }
+      const base = { reflex: 'shield', turn: state?.turn, step: state?.step, callId: exec.callId, tool: exec.name, call: subject(relativeTo(briefCall(exec), await workspaceOf(exec), homedir())) }
       const started = performance.now()
       let verdict
       try {

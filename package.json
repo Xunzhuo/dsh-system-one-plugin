@@ -1,7 +1,7 @@
 {
   "name": "@vllm-sr/dsh",
-  "version": "0.4.0",
-  "description": "System Duo for DeepSeek Harness. Thinking, fast and slow. One key: System One decision models guard, shield, triage and check your agent around System Two (vllm-sr/auto), with one free app.vllm-sr.ai key.",
+  "version": "0.4.1",
+  "description": "System Duo for DeepSeek Harness. Thinking, fast and slow: System One decision models guard, shield, triage and check your agent around System Two (vllm-sr/auto), with one free app.vllm-sr.ai key.",
   "keywords": [
     "deepseek-harness",
     "dsh",

@@ -20,6 +20,28 @@ export function subject(text, max = 200) {
   return redact(clip(text, max))
 }
 
+const escaped = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// a path starts after a separator and ends at one, so /work does not match inside /work2 or /x/work
+const START = String.raw`(?<=^|[\s'"=:(])`
+const END = String.raw`(?=$|[\s'"/;&|)<>,])`
+
+/**
+ * A call as the cards show it: paths in the session's working directory relative to it, the home directory as `~`,
+ * and no leading `cd` into the working directory itself.
+ */
+export function relativeTo(text, workspace, home) {
+  let out = String(text ?? '')
+  const root = dir => (typeof dir === 'string' && dir.replace(/\/+$/, '').length > 1 ? escaped(dir.replace(/\/+$/, '')) : undefined)
+  const work = root(workspace)
+  if (work) {
+    out = out.replace(new RegExp(`${START}${work}/`, 'g'), '').replace(new RegExp(`${START}${work}${END}`, 'g'), '.')
+    out = out.replace(/^cd \.\s*&&\s*/, '')
+  }
+  const own = root(home)
+  if (own) out = out.replace(new RegExp(`${START}${own}${END}`, 'g'), '~')
+  return out
+}
+
 /**
  * @param {object} options
  * @param {((session: object, type: string, data: object) => unknown) | undefined} options.append - DeepSeek
