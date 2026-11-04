@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { test } from 'node:test'
-import { createDecisionClient } from '../src/client.js'
+import { ITEMS_PER_REQUEST, REQUEST_TOKENS, createDecisionClient, requestSlices, stateCost } from '../src/client.js'
 
 function fakeApi(handler) {
   return new Promise(resolve => {
@@ -97,4 +97,22 @@ test('a missing key is a clear error', async () => {
   const client = createDecisionClient({ baseURL: 'http://127.0.0.1:9', apiKeyEnv: 'S1_NO_KEY' })
   await assert.rejects(client.ask({ model: 'm', questions: {}, inputs: [{ state: 'x' }] }), /no System One key/)
   client.close()
+})
+
+test('requests are cut so that every question reading its state again stays within the token estimate', () => {
+  // short states: nine to a request
+  assert.deepEqual(requestSlices(Array.from({ length: 20 }, () => 'a short ticket'), 4), [{ start: 0, count: 9 }, { start: 9, count: 9 }, { start: 18, count: 2 }])
+  // long states, three questions each: as many as fit, and a state too heavy to share a request goes alone
+  const long = 'x'.repeat(20000)
+  const slices = requestSlices([long, long, long, 'x'.repeat(60000), long], 3)
+  assert.deepEqual(slices, [{ start: 0, count: 1 }, { start: 1, count: 1 }, { start: 2, count: 1 }, { start: 3, count: 1 }, { start: 4, count: 1 }])
+  assert.deepEqual(requestSlices([long, long, long], 1), [{ start: 0, count: 3 }])
+  for (const { start, count } of requestSlices(Array.from({ length: 30 }, (_, i) => 'y'.repeat(1000 * (i + 1))), 2)) {
+    const cost = Array.from({ length: count }, (_, k) => stateCost('y'.repeat(1000 * (start + k + 1))) * 2).reduce((a, b) => a + b, 0)
+    assert.ok(count === 1 || cost <= REQUEST_TOKENS, `${start}+${count}: ${cost}`)
+    assert.ok(count <= ITEMS_PER_REQUEST)
+  }
+  // bytes, not characters: three bytes a character in Chinese text
+  assert.equal(stateCost('数据'), 6 + 160)
+  assert.equal(stateCost({ user: 'a', answer: 'b' }), JSON.stringify({ user: 'a', answer: 'b' }).length + 160)
 })

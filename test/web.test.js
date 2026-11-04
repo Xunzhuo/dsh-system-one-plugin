@@ -10,6 +10,7 @@ const RECORD = 'plugin:vllm-sr/dsh/system-one'
 const fakeReact = {
   createElement: (type, props, ...children) => ({ type, props: { ...props, children: children.flat(Infinity).filter(child => child !== null && child !== undefined && child !== false) } }),
   useState: init => [typeof init === 'function' ? init() : init, () => {}],
+  useEffect: () => {},
   Component: class {
     constructor(props) {
       this.props = props
@@ -17,10 +18,10 @@ const fakeReact = {
   },
 }
 
-function load({ require = specifier => (specifier === 'react' ? fakeReact : assert.fail(`unexpected require ${specifier}`)), document } = {}) {
+function load({ require = specifier => (specifier === 'react' ? fakeReact : assert.fail(`unexpected require ${specifier}`)), document, globals = {} } = {}) {
   const registered = []
   const warnings = []
-  const context = vm.createContext({ window: { __ModuleLoader__: { load: spec => registered.push(spec) } }, console: { warn: (...args) => warnings.push(args.join(' ')) }, document })
+  const context = vm.createContext({ window: { __ModuleLoader__: { load: spec => registered.push(spec) } }, console: { warn: (...args) => warnings.push(args.join(' ')) }, document, ...globals })
   vm.runInContext(SOURCE, context)
   assert.equal(registered.length, 1)
   return { spec: registered[0], exports: registered[0].factory(require), warnings }
@@ -93,6 +94,8 @@ test('the bundle registers as the package, requires no service, and draws into t
     ['entry', 'conversation.chat.node', 'vllm-sr.system-one', 'SystemOneNode'],
     ['slot', 'conversation.chat.node', 'function'],
     ['entry', 'tool.call.toolview', 'system_one', 'SystemOneToolRow'],
+    ['slot', 'tool.call.toolview', 'function'],
+    ['entry', 'tool.call.toolview', 'system_one_screen', 'SystemOneScreenRow'],
     ['slot', 'tool.call.toolview', 'function'],
   ])
 })
@@ -491,4 +494,223 @@ test('System One draws in the blue of the vLLM logo, keeps red and amber inside 
   assert.ok(reveal && Number(reveal[1]) >= 18 && Number(reveal[1]) <= 24, 'the reveal takes 180 to 240 ms')
   assert.doesNotMatch(css, /scale\(1\.0\d\)|vsr-s1-pop|vsr-s1-ring|vsr-s1-glow/, 'no bounce, no ring, no glow pulse')
   assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{[^}]*animation:none!important[^}]*\}\.vsr-s1__shim-deco\{display:none\}/)
+})
+
+test('a batch card shows what span questions marked, which preset or signal asked, and the copy it redacted', () => {
+  const { exports } = load()
+  const meta = {
+    systemOne: 1, ui: 'card', model: 'vllm-sr/d3-ultra', spanModel: 'vllm-sr/vela3-turbo', items: 32, questions: 4, requests: 8, seconds: 5.84, output: '/work/support/tickets.s1.jsonl',
+    summary: {
+      mentions: { type: 'span', labels: { ERROR: 7, COMPETITOR: 3 }, items: 9, of: 32, top: [], examples: [], failed: 0 },
+      personal: { type: 'span', preset: 'pii', labels: { PERSON: 12, EMAIL_ADDRESS: 5 }, items: 14, of: 32, top: [], failed: 0 },
+      attack: { type: 'choice', signal: 'attack', counts: { benign: 31, jailbreak: 1 }, unsure: [], unsureCount: 0, failed: 0 },
+      team: { type: 'choice', counts: { support: 12, engineering: 12, billing: 8 }, unsure: [], unsureCount: 0, failed: 0 },
+    },
+    examples: {
+      mentions: [{ id: 'T-1042', kind: 'labels', parts: [{ text: '…export to ' }, { mark: { label: 'COMPETITOR', probability: 0.93, text: 'Snowflake' } }, { text: ' fails with ' }, { mark: { label: 'ERROR', probability: 0.97, text: 'HTTP 504' } }, { text: '. Call me, [PERSON].…' }] }],
+      personal: [{ id: 'T-1042', kind: 'masked', parts: [{ text: 'Call me, ' }, { mark: { label: 'PERSON', probability: 0.99 } }, { text: ', on ' }, { mark: { label: 'PHONE_NUMBER', probability: 0.98 } }] }],
+    },
+    redacted: { output: '/work/support/tickets.redacted.jsonl', items: 14, spans: 17 },
+  }
+  const opened = []
+  const props = { callId: 'call-8', toolName: 'system_one', cwd: '/work', sessionId: 's-1', openFile: path => opened.push(path), phase: 'result', block: { time: Date.now(), isError: false, content: [], meta, call: { name: 'system_one', argsRaw: '{"file":"support/tickets.jsonl"}' } } }
+  const tree = render(exports.SystemOneToolRow(props))
+  const text = textOf(tree)
+  for (const expected of ['32 items · 4 questions · 8 requests', 'Spans by vllm-sr/vela3-turbo', 'ERROR', 'COMPETITOR', 'in 9 of 32 items', 'in 14 of 32 items', 'jailbreak', 'T-1042', '. Call me, [PERSON].…',
+    'Redacted copy support/tickets.redacted.jsonl · 17 spans in 14 items replaced by their [LABEL]']) {
+    assert.ok(text.includes(expected), `${expected} in ${text}`)
+  }
+  const root = findAll(tree, props => props['data-system-one'])[0]
+  assert.deepEqual(attrs(root, ['', 'model', 'span-model', 'spans']), { '': 'tool', model: 'vllm-sr/d3-ultra', 'span-model': 'vllm-sr/vela3-turbo', spans: '27' })
+  // one model in the head; the span model is named in the card
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'model').map(textOf), ['vllm-sr/d3-ultra'])
+  assert.equal(textOf(findAll(tree, props => props['data-system-one-part'] === 'span-model')[0]), 'Spans by vllm-sr/vela3-turbo')
+  assert.deepEqual(findAll(tree, props => props['data-system-one-question']).map(question => attrs(question, ['question', 'kind'])),
+    [{ question: 'mentions', kind: 'span' }, { question: 'personal', kind: 'span' }, { question: 'attack', kind: 'choice' }, { question: 'team', kind: 'choice' }])
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'qtag').map(textOf), ['labels', 'pii', 'signal attack'])
+
+  // each label keeps its hue from the legend to the words it marked; personal data shows only its label
+  const marks = findAll(tree, props => props['data-system-one-part'] === 'span')
+  assert.deepEqual(marks.map(mark => [mark.props['data-system-one-span-label'], textOf(mark), mark.props.className.split(' ').pop()]), [
+    ['COMPETITOR', 'SnowflakeCOMPETITOR', 'vsr-s1__span--labels'], ['ERROR', 'HTTP 504ERROR', 'vsr-s1__span--labels'],
+    ['PERSON', 'PERSON', 'vsr-s1__span--masked'], ['PHONE_NUMBER', 'PHONE_NUMBER', 'vsr-s1__span--masked'],
+  ])
+  const swatches = Object.fromEntries(findAll(findAll(tree, props => props['data-system-one-question'] === 'mentions')[0], props => props.className === 'vsr-s1__key' && props.title).map(key => [key.props.title.split(':')[0], key.props.children[0].props.style.background]))
+  assert.deepEqual([marks[0].props.style['--vsr-s1-hue'], marks[1].props.style['--vsr-s1-hue']], [swatches.COMPETITOR, swatches.ERROR])
+  assert.notEqual(swatches.COMPETITOR, swatches.ERROR)
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'example').map(example => example.props['data-system-one-item']), ['T-1042', 'T-1042'])
+
+  findAll(tree, props => props.className === 'vsr-s1__link').forEach(link => link.props.onClick())
+  assert.deepEqual(opened, ['/work/support/tickets.s1.jsonl', '/work/support/tickets.redacted.jsonl'])
+})
+
+test('grounded checks show the passage that backs an item with its file and line, and the words no source supports', () => {
+  const { exports } = load()
+  const meta = {
+    systemOne: 1, ui: 'card', model: 'vllm-sr/vela3-turbo', items: 9, questions: 2, requests: 2, seconds: 2.1, output: '/work/release-notes/draft.s1.jsonl',
+    summary: {
+      unsupported: { type: 'span', preset: 'halu', labels: { unsupported: 3 }, items: 3, of: 9, top: [], examples: [], failed: 0 },
+      backed: { type: 'span', preset: 'evidence', labels: { evidence: 5 }, items: 5, of: 9, top: [], examples: [], failed: 0 },
+    },
+    examples: {
+      unsupported: [{ id: 'line-2', kind: 'unsupported', parts: [{ text: 'Release 2.4 ' }, { mark: { label: 'unsupported', probability: 0.79, text: 'adds a native Snowflake connector' } }, { text: '.' }] }],
+      backed: [{ id: 'line-5', kind: 'evidence', parts: [{ text: '…' }, { mark: { label: 'evidence', probability: 0.91, text: 'Parquet exports stream in chunks' } }, { text: '…' }], source: 'release-notes/CHANGELOG.md:12' }],
+    },
+    sources: ['release-notes/CHANGELOG.md'],
+  }
+  const opened = []
+  const tree = render(exports.SystemOneToolRow({ callId: 'call-4', toolName: 'system_one', cwd: '/work', openFile: path => opened.push(path), phase: 'result', block: { time: Date.now(), isError: false, content: [], meta, call: { name: 'system_one', argsRaw: '{}' } } }))
+  const text = textOf(tree)
+  for (const expected of ['halu', 'evidence', 'unsupported', 'in 3 of 9 items', 'adds a native Snowflake connector', 'Parquet exports stream in chunks', 'release-notes/CHANGELOG.md:12', 'Checked against release-notes/CHANGELOG.md']) {
+    assert.ok(text.includes(expected), `${expected} in ${text}`)
+  }
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'span').map(mark => mark.props.className.split(' ').pop()), ['vsr-s1__span--unsupported', 'vsr-s1__span--evidence'])
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'source').map(textOf), ['release-notes/CHANGELOG.md:12'])
+  for (const part of ['qtag', 'examples', 'example', 'source', 'sources', 'results']) assert.ok(parts(tree).includes(part), `part ${part}`)
+  findAll(tree, props => props.className === 'vsr-s1__link').forEach(link => link.props.onClick())
+  assert.deepEqual(opened, ['/work/release-notes/draft.s1.jsonl', '/work/release-notes/CHANGELOG.md'])
+})
+
+test('a batch over images shows each one with its boxes, read from the workspace once through the Web UI', async () => {
+  const reads = []
+  const made = []
+  const globals = {
+    Blob: class {
+      constructor(parts, options) {
+        this.parts = parts
+        this.type = options?.type
+      }
+    },
+    URL: { createObjectURL: blob => `blob:${made.push(blob)}`, revokeObjectURL: () => {} },
+  }
+  // React whose effects run as it draws, and whose state setters tell what they were given
+  const sets = []
+  const eager = { ...fakeReact, useState: init => [typeof init === 'function' ? init() : init, value => sets.push(value)], useEffect: effect => { effect() } }
+  const { exports } = load({ require: specifier => (specifier === 'react' ? eager : assert.fail(specifier)), globals })
+  const meta = {
+    systemOne: 1, ui: 'card', model: 'vllm-sr/d3-ultra', items: 12, questions: 2, requests: 1, seconds: 3.4, output: '/work/qa/screens.s1.jsonl',
+    summary: {
+      broken: { type: 'noul', yes: 5, no: 7, top: [], failed: 0 },
+      defect: { type: 'box', found: 5, of: 12, boxes: [['screen-02.png', [0.1, 0.2, 0.5, 0.3], 0.93]], failed: 0 },
+    },
+    images: [
+      { id: 'screen-02.png', path: '/work/qa/screens/screen-02.png', boxes: [{ id: 'defect', box: { left: 0.1, top: 0.2, right: 0.5, bottom: 0.3 }, confidence: 0.93 }], answers: { broken: { yes: 0.99 } } },
+      { id: 'screen-03.png', path: '/work/qa/screens/screen-03.png', boxes: [], answers: { broken: { yes: 0.04 } } },
+    ],
+    annotated: { dir: '/work/qa/annotated', files: ['qa/annotated/screen-02.png'], skipped: [] },
+  }
+  const opened = []
+  const props = { callId: 'call-3', toolName: 'system_one', cwd: '/work', sessionId: 'session-1', openFile: path => opened.push(path), phase: 'result', block: { time: Date.now(), isError: false, content: [], meta, call: { name: 'system_one', argsRaw: '{"images":["qa/screens/screen-02.png"]}' } } }
+
+  // until the Web UI's file service is there, each image waits in an empty frame
+  const waiting = render(exports.SystemOneToolRow(props))
+  assert.deepEqual(findAll(waiting, props => props['data-system-one-part'] === 'shot').map(shot => [shot.props['data-system-one-image'], /--empty/.test(shot.props.className)]), [['screen-02.png', true], ['screen-03.png', true]])
+  assert.deepEqual(findAll(waiting, props => props['data-system-one-part'] === 'image').map(image => attrs(image, ['item', 'found'])), [{ item: 'screen-02.png', found: '1' }, { item: 'screen-03.png', found: '0' }])
+  const [box] = findAll(waiting, props => props['data-system-one-part'] === 'box')
+  assert.deepEqual([box.props['data-system-one-box'], box.props.style.left, box.props.style.top, box.props.style.width, box.props.style.height, box.props.title], ['defect', '10.00%', '20.00%', '40.00%', '10.00%', 'defect 0.93'])
+  const text = textOf(waiting)
+  for (const expected of ['found', '5', 'not found', '7', 'broken 0.99', 'broken 0.04', 'Annotated copies qa/annotated/screen-02.png']) assert.ok(text.includes(expected), `${expected} in ${text}`)
+  findAll(waiting, props => props.className === 'vsr-s1__link').forEach(link => link.props.onClick())
+  assert.deepEqual(opened, ['/work/qa/screens.s1.jsonl', '/work/qa/annotated/screen-02.png'])
+
+  // the Web UI's remote calls answer a result: the bytes are its value's data, and a file it refuses is not drawn
+  const readBytes = async (...args) => {
+    reads.push(args)
+    return args[1].endsWith('missing.png') ? { ok: false, error: { code: 'workspace-file/not-found', message: 'not found' } } : { ok: true, value: { offset: 0, data: new Uint8Array([137, 80, 78, 71]), eof: true, absolutePath: args[1], version: 'v1' } }
+  }
+  exports.apply({ inject: (deps, callback) => callback(deps.includes('remote.workspaceFiles') ? { remote: { workspaceFiles: { readBytes } } } : {}) })
+  assert.ok(sets.includes(true), 'the frames that waited for the service draw again')
+  render(exports.SystemOneToolRow(props))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(reads.map(([session, path, options, signal]) => [session, path, JSON.stringify(options), signal]),
+    [['session-1', '/work/qa/screens/screen-02.png', '{}', undefined], ['session-1', '/work/qa/screens/screen-03.png', '{}', undefined]])
+  assert.deepEqual(made.map(blob => blob.type), ['image/png', 'image/png'])
+  assert.deepEqual(sets.filter(value => typeof value === 'string'), ['blob:1', 'blob:2'])
+  const drawn = render(exports.SystemOneToolRow(props))
+  assert.deepEqual(findAll(drawn, props => props.src).map(image => image.props.src), ['blob:1', 'blob:2'])
+  assert.equal(reads.length, 2, 'each image is read once')
+  assert.deepEqual(made.map(blob => blob.parts[0] instanceof Uint8Array), [true, true], 'a blob holds the file bytes')
+
+  const missing = { ...props, block: { ...props.block, meta: { ...meta, images: [{ id: 'missing.png', path: '/work/qa/screens/missing.png', boxes: [], answers: {} }] } } }
+  render(exports.SystemOneToolRow(missing))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(made.length, 2, 'a file the Web UI refuses makes no image')
+  assert.deepEqual(findAll(render(exports.SystemOneToolRow(missing)), props => props['data-system-one-part'] === 'shot').map(shot => /--empty/.test(shot.props.className)), [true])
+})
+
+test('the system_one_screen row shows the screenshot, where to click, what it shows, and whether the action worked', () => {
+  const { exports } = load()
+  const meta = {
+    systemOneScreen: 1, ui: 'card', model: 'vllm-sr/vela3-turbo', seconds: 1.42, requests: 2,
+    image: 'shots/after.png', imagePath: '/work/shots/after.png', size: { width: 1280, height: 800 },
+    found: {
+      notice: { what: 'the payment failed notice', box: { left: 0.68, top: 0.0375, right: 0.971, bottom: 0.1325 }, pixels: { left: 870, top: 30, right: 1243, bottom: 106 }, click: { x: 1058, y: 68 }, confidence: 1, found: true },
+      receipt: { what: 'a link to the receipt', box: { left: 0, top: 0, right: 0.1, bottom: 0.1 }, pixels: { left: 0, top: 0, right: 128, bottom: 80 }, click: { x: 64, y: 40 }, confidence: 0.02, found: false },
+    },
+    checks: { page: { choice: 'billing', confidence: 0.97 } },
+    expect: { text: 'the invoice is paid', yes: 0.02 },
+    action: { text: 'click "Pay now" to pay the open invoice', before: 'shots/before.png', beforePath: '/work/shots/before.png', succeeded: 0.03 },
+    annotated: 'shots/after.annotated.png',
+  }
+  const opened = []
+  const props = { callId: 'call-9', toolName: 'system_one_screen', cwd: '/work', sessionId: 's-1', openFile: path => opened.push(path), phase: 'result', block: { time: Date.now(), isError: false, content: [{ type: 'text', text: 'Error: shots/x.png is not a PNG, JPEG or WebP image' }], meta, call: { name: 'system_one_screen', argsRaw: '{"image":"shots/after.png"}' } } }
+  const rootOf = tree => findAll(tree, props => props['data-system-one'])[0]
+  const tree = render(exports.SystemOneScreenRow(props))
+  assert.deepEqual(attrs(rootOf(tree), ['', 'reflex', 'verdict', 'tone', 'found', 'expect', 'action', 'image', 'model', 'call']),
+    { '': 'screen', reflex: 'screen', verdict: 'done', tone: 'bad', found: '1', expect: 'no', action: 'failed', image: 'shots/after.png', model: 'vllm-sr/vela3-turbo', call: 'call-9' })
+  assert.match(rootOf(tree).props.className, /vsr-s1--card/)
+  const text = spoken(tree)
+  for (const expected of ['System One · 1.4 s · Screen · found 1 of 2 · not the expected screen · the action did not work · shots/after.png', 'vllm-sr/vela3-turbo', 'the payment failed notice', 'click 1058, 68',
+    'a link to the receipt', 'not found', 'billing 0.97', 'Not as expected 0.02', 'the invoice is paid', 'Did not work 0.03', 'click "Pay now" to pay the open invoice', 'Before', 'After', 'Annotated copy shots/after.annotated.png']) {
+    assert.ok(text.includes(expected), `${expected} in ${text}`)
+  }
+  for (const part of ['head', 'icon', 'badge', 'latency', 'reflex', 'summary', 'verdict', 'model', 'rows', 'shot', 'box', 'point', 'targets', 'target', 'click', 'checks', 'expect', 'action', 'before', 'after', 'annotated']) assert.ok(parts(tree).includes(part), `part ${part}`)
+  // the frame stays blue: red is only the verdict that the action did not work
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'verdict' && /vsr-s1__verdict--/.test(props.className ?? '')).map(verdict => verdict.props.className), ['vsr-s1__verdict vsr-s1__verdict--bad'])
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'model').map(textOf), ['vllm-sr/vela3-turbo'])
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'shot').map(shot => shot.props['data-system-one-image']), ['after.png', 'before.png', 'after.png'])
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'target').map(target => attrs(target, ['target', 'found'])), [{ target: 'notice', found: 'yes' }, { target: 'receipt', found: 'no' }])
+  const boxes = findAll(tree, props => props['data-system-one-part'] === 'box')
+  assert.deepEqual(boxes.map(box => [box.props['data-system-one-box'], box.props.style.left, box.props.style.top, /--low/.test(box.props.className), textOf(box)]), [['notice', '68.00%', '3.75%', true, 'notice 1.00']])
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'point').map(point => [point.props.style.left, point.props.style.top]), [['82.66%', '8.50%']])
+  assert.deepEqual(findAll(tree, props => props['data-system-one-fact']).map(fact => fact.props['data-system-one-fact']), ['page'])
+  findAll(tree, props => props.className === 'vsr-s1__link').forEach(link => link.props.onClick())
+  assert.deepEqual(opened, ['/work/shots/after.annotated.png'])
+
+  // an action that worked, one target, nothing expected
+  const worked = { ...meta, found: { create: { ...meta.found.notice, what: 'the Create pipeline button' } }, checks: undefined, expect: undefined, annotated: undefined, action: { ...meta.action, text: 'click "Create pipeline"', succeeded: 0.97 } }
+  const good = render(exports.SystemOneScreenRow({ ...props, block: { ...props.block, meta: worked } }))
+  assert.deepEqual(attrs(rootOf(good), ['tone', 'found', 'expect', 'action']), { tone: 'ok', found: '1', expect: undefined, action: 'succeeded' })
+  assert.ok(spoken(good).includes('found create · the action worked'), spoken(good))
+  assert.ok(textOf(good).includes('Worked 0.97'))
+
+  const running = render(exports.SystemOneScreenRow({ ...props, phase: 'start', block: { argsRaw: '{"image":"shots/after.png","before":"shots/before.png","action":"click Pay now"}' } }))
+  assert.deepEqual(attrs(rootOf(running), ['', 'reflex', 'verdict', 'tone']), { '': 'screen', reflex: 'screen', verdict: 'running', tone: 'info' })
+  assert.ok(spoken(running).includes('System One · Screen · Looking at after.png after “click Pay now”'), spoken(running))
+  assert.ok(parts(running).includes('progress'))
+
+  const failed = render(exports.SystemOneScreenRow({ ...props, block: { ...props.block, isError: true, meta: undefined } }))
+  assert.deepEqual(attrs(rootOf(failed), ['', 'verdict', 'tone']), { '': 'screen', verdict: 'error', tone: 'bad' })
+  assert.ok(textOf(failed).includes('not a PNG, JPEG or WebP image'))
+
+  const compact = render(exports.SystemOneScreenRow({ ...props, block: { ...props.block, meta: { ...meta, ui: 'compact' } } }))
+  assert.match(rootOf(compact).props.className, /vsr-s1--compact/)
+  assert.ok(!parts(compact).includes('shot'), 'a compact row opens on demand')
+  assert.ok(spoken(compact).includes('System One · 1.4 s · Screen · found 1 of 2 · not the expected screen · the action did not work · shots/after.png'), spoken(compact))
+})
+
+test('a done-check shows the passages of what System Two read that back its answer', () => {
+  const { exports } = load()
+  const [done] = assemble(exports.definition, [record({
+    reflex: 'done', answers: { complete: { yes: 0.96 }, checked: { yes: 0.9 }, waiting: { yes: 0.02 } }, verdict: 'stop', why: 'complete', spanModel: 'vllm-sr/vela3-turbo', unsupported: 0, backed: 2,
+    evidence: [{ tool: 'read', source: 'billing/pyproject.toml', text: 'requires-python = ">=3.11"', p: 0.96 }, { tool: 'bash', source: 'pytest -q', text: '14 passed in 0.42s', p: 0.88 }],
+  })])
+  const tree = render(exports.SystemOneNode({ node: done }))
+  assert.deepEqual(findAll(tree, props => props['data-system-one-fact']).map(fact => fact.props['data-system-one-fact']), ['complete', 'checked', 'waiting', 'unsupported', 'backed'])
+  const text = textOf(tree)
+  for (const expected of ['The work is done', 'Backed2', 'Backed by', 'read · billing/pyproject.toml', 'requires-python = ">=3.11"', 'bash · pytest -q', '14 passed in 0.42s']) assert.ok(text.includes(expected), `${expected} in ${text}`)
+  assert.equal(findAll(tree, props => props['data-system-one-part'] === 'backing').length, 2)
+  assert.deepEqual(findAll(tree, props => props['data-system-one-part'] === 'span').map(mark => [mark.props['data-system-one-span-label'], textOf(mark), mark.props['data-system-one-probability']]),
+    [['evidence', 'requires-python = ">=3.11"', '0.96'], ['evidence', '14 passed in 0.42s', '0.88']])
+  for (const part of ['evidence', 'backing', 'source']) assert.ok(parts(tree).includes(part), `part ${part}`)
 })

@@ -13,6 +13,39 @@ import { setTimeout as sleep } from 'node:timers/promises'
 /** Inputs answered by one request: the top-level state plus `limits.max_states` more. */
 export const ITEMS_PER_REQUEST = 9
 
+/**
+ * The input tokens a request may estimate, with room to spare: the Decision API counts every question as reading its
+ * state again, about one token per UTF-8 byte, and refuses a request over the model's `max_request_tokens` (131,072
+ * for the published models) with 400 request_too_long.
+ */
+export const REQUEST_TOKENS = 112000
+
+/** What one question over `state` adds to a request's estimate. */
+export const stateCost = state => Buffer.byteLength(typeof state === 'string' ? state : JSON.stringify(state ?? '')) + 160
+
+/**
+ * Consecutive slices of `states`, at most {@link ITEMS_PER_REQUEST} each, whose `questions` questions per state stay
+ * within {@link REQUEST_TOKENS}.
+ * @returns {Array<{start: number, count: number}>}
+ */
+export function requestSlices(states, questions) {
+  const slices = []
+  let start = 0
+  while (start < states.length) {
+    let count = 0
+    let cost = 0
+    while (start + count < states.length && count < ITEMS_PER_REQUEST) {
+      const next = stateCost(states[start + count]) * Math.max(1, questions)
+      if (count > 0 && cost + next > REQUEST_TOKENS) break
+      cost += next
+      count++
+    }
+    slices.push({ start, count })
+    start += count
+  }
+  return slices
+}
+
 export class DecisionError extends Error {
   constructor(message, status = 0, code = undefined) {
     super(message)
@@ -226,7 +259,7 @@ export function compactAnswer(answer) {
         p: Object.fromEntries(Object.entries(answer.probabilities ?? {}).map(([k, v]) => [answer.legend?.[k] ?? k, round(v)])),
       }
     case 'box':
-      return { box: answer.box, confidence: round(answer.confidence) }
+      return { box: Object.fromEntries(Object.entries(answer.box ?? {}).map(([k, v]) => [k, Math.round(v * 10000) / 10000])), confidence: round(answer.confidence) }
     default:
       return answer
   }

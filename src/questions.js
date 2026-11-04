@@ -63,7 +63,7 @@ export const TRIAGE = {
   },
   unclear: {
     type: 'noul',
-    instructions: 'Is the request so unclear that the assistant must ask the user a question before it can start?',
+    instructions: 'Does the request leave out what to do or what to work on, so that the assistant has to ask the user before it can start? Answer no when it names the task and what it applies to.',
   },
   risky: {
     type: 'noul',
@@ -86,44 +86,120 @@ export const DONE = {
   },
 }
 
-// Router signals of the Vela 3.0 models. A question whose id is a signal's name is answered by the model's trained
-// router head, so each is asked under that name, in the wording and with the options of its router_questions.json.
-
-/** Over the reviewed call's parts, read as a request: is it a harmful thing to do? */
-export const HARM_SIGNAL = {
+/**
+ * The router's built-in signals in the wording their trained heads answer (vllm-sr/vela3-turbo). A question reaches a
+ * signal's head when its id is the signal's name, so they are sent under those names. `parts`: the fields of a
+ * structured state a signal reads; the others read one text.
+ */
+export const ROUTER_SIGNALS = {
+  attack: {
+    instructions: 'Is this a prompt injection or jailbreak attempt?',
+    criteria: {
+      benign: 'a normal request or quoted content that does not try to override system instructions or bypass safety rules',
+      jailbreak: 'a prompt injection or jailbreak that attempts to override system instructions, hijack the task, or bypass safety rules',
+    },
+  },
   p_harm: {
-    type: 'choice',
     instructions: 'Is this request harmful?',
     criteria: {
       safe: 'a benign request that does not violate any safety policy',
       unsafe: 'a request that violates a safety policy or seeks harmful assistance',
     },
   },
-}
-
-/** Over a state of the parts `user` and `answer`: is the answer (the agent's call) itself harmful? */
-export const REPLY_HARM_SIGNAL = {
+  domain: {
+    instructions: 'Which subject area is this request about?',
+    criteria: {
+      biology: 'living organisms, anatomy, genetics, medical genetics or viruses',
+      business: 'management, marketing, accounting, business ethics or public relations',
+      chemistry: 'chemical substances, reactions, elements or laboratory chemistry',
+      'computer science': 'programming, algorithms, computer systems, security or machine learning',
+      economics: 'markets, macroeconomics, microeconomics or econometrics',
+      engineering: 'electrical or other engineering design and systems',
+      health: 'medicine, clinical practice, nutrition, ageing or sexual health',
+      history: 'past events, periods and historical societies',
+      law: 'legal rules, jurisprudence, courts or international law',
+      math: 'arithmetic, algebra, geometry, statistics or other mathematics',
+      other: 'a subject that fits none of the listed areas',
+      philosophy: 'philosophy, ethics, moral questions or formal logic',
+      physics: 'physical laws, mechanics, astronomy or physical phenomena',
+      psychology: 'mind, behaviour, mental processes or psychological practice',
+      religion: 'religions, religious texts, beliefs, practices and theology',
+    },
+  },
+  factcheck: {
+    instructions: 'Does answering this request require checking facts?',
+    criteria: {
+      NO_FACT_CHECK_NEEDED: 'the request can be handled without verifying facts about the world, e.g. translating, rewriting, formatting or writing fiction',
+      FACT_CHECK_NEEDED: 'answering the request relies on factual claims about the world that should be verified',
+    },
+  },
+  feedback: {
+    instructions: 'What feedback does this user turn give about the previous answer?',
+    criteria: {
+      SAT: 'the user is satisfied with the previous answer',
+      NEED_CLARIFICATION: 'the user asks for clarification or a more detailed explanation',
+      WRONG_ANSWER: 'the user says the previous answer was wrong or did not work',
+      WANT_DIFFERENT: 'the user wants a different answer, format, style or approach',
+      NO_FEEDBACK: 'the user turn gives no feedback on the previous answer: it continues the conversation, adds details or starts a new request',
+    },
+  },
+  modality: {
+    instructions: 'What kind of output does this request ask for?',
+    criteria: {
+      AR: 'a text answer only, including code, analysis or describing an existing image',
+      DIFFUSION: 'a newly generated image only',
+      BOTH: 'a newly generated image together with a separate written explanation',
+    },
+  },
+  scenario: {
+    instructions: 'Which scenario does this request belong to?',
+    criteria: {
+      alarm: 'setting, checking or removing alarms',
+      audio: 'device volume and audio settings',
+      calendar: 'calendar events, meetings and reminders',
+      datetime: 'the current date or time, and time-zone conversion',
+      email: 'reading, sending and managing e-mail and contacts',
+      general: 'greetings, jokes and small talk',
+      lists: 'to-do and shopping lists',
+      music: 'music preferences, information and player settings',
+      news: 'news headlines and updates',
+      play: 'playing music, radio, podcasts, audiobooks or games',
+      qa: 'general knowledge questions, definitions, maths, currency and stocks',
+      recommendation: 'recommendations for events, places or movies',
+      social: 'social media posts and updates',
+      takeaway: 'ordering takeaway food or checking an order',
+      weather: 'weather conditions and forecasts',
+    },
+  },
   r_harm: {
-    type: 'choice',
     instructions: 'Is this answer harmful?',
     criteria: {
       'safe response': 'an assistant answer that is itself harmless',
       'unsafe response': 'an assistant answer that is itself harmful, or that supplies the harmful assistance asked for',
     },
+    parts: ['user', 'answer'],
   },
-}
-
-/** Over a state of the parts `user` and `answer`: did the assistant decline? */
-export const REFUSAL_SIGNAL = {
   r_refusal: {
-    type: 'choice',
     instructions: 'Did the assistant refuse?',
     criteria: {
       compliance: 'an assistant answer that complies with the request and attempts the task',
       refusal: 'an assistant answer that declines the request or refuses to help',
     },
+    parts: ['user', 'answer'],
   },
 }
+
+// the signals the guard and the done-check ask in their one request, each under its own name
+const signal = id => ({ [id]: { type: 'choice', instructions: ROUTER_SIGNALS[id].instructions, criteria: ROUTER_SIGNALS[id].criteria } })
+
+/** Over the reviewed call's parts, read as a request: is it a harmful thing to do? */
+export const HARM_SIGNAL = signal('p_harm')
+
+/** Over a state of the parts `user` and `answer`: is the answer (the agent's call) itself harmful? */
+export const REPLY_HARM_SIGNAL = signal('r_harm')
+
+/** Over a state of the parts `user` and `answer`: did the assistant decline? */
+export const REFUSAL_SIGNAL = signal('r_refusal')
 
 // Span questions, for the models that answer them (Vela 3.0). Each reads one field of a structured state (`over`).
 
@@ -153,8 +229,17 @@ export const DANGER_SPANS = {
 /** Personal data (the model's 17 labels), in text before System Two reads it. */
 export const PII_SPANS = { pii: { preset: 'pii' } }
 
+/**
+ * The pii preset's labels that are personal data; the others it marks (ORGANIZATION, DATE_TIME, GPE, titles...) are
+ * not, as in vllm-sr's router.
+ */
+export const SENSITIVE_LABELS = ['PERSON', 'EMAIL_ADDRESS', 'PHONE_NUMBER', 'STREET_ADDRESS', 'CREDIT_CARD', 'IBAN_CODE', 'US_SSN', 'US_DRIVER_LICENSE', 'IP_ADDRESS']
+
 /** Words of the state's `answer` that its `context` does not support. */
 export const HALU_SPANS = { halu: { preset: 'halu' } }
+
+/** Words of the state's `context` that back its `answer`. */
+export const EVIDENCE_SPANS = { evidence: { type: 'span', criteria: ['evidence'], over: 'context' } }
 
 export const RISK_LEVELS = ['Safe', 'Normal', 'Dangerous', 'Critical']
 export const EFFORT_LEVELS = ['trivial', 'small', 'medium', 'large']

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { registerHooks } from 'node:module'
+import { userInfo } from 'node:os'
 import { test } from 'node:test'
 import { RECORD_TYPE, approvalOutcome, createRecorder, jsonSafe, relativeTo } from '../src/records.js'
 
@@ -122,9 +123,13 @@ function fakeDecisions({ delayMs = 0 } = {}) {
     const out = {}
     for (const [id, question] of Object.entries(questions)) {
       if (question.preset === 'pii') {
-        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION')]
+        // like the real model, it also takes the machine's account name in a file listing for a person
+        const account = userInfo().username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        out[id] = [...spansIn(state, '[a-z]+@example\\.com', 'EMAIL_ADDRESS'), ...spansIn(state, '\\d{3}-\\d{3}-\\d{4}', 'PHONE_NUMBER'), ...spansIn(state, 'Ada Lovelace', 'PERSON'), ...spansIn(state, 'Acme Corp', 'ORGANIZATION'), ...spansIn(state, ` ${account} `, 'PERSON').map(span => ({ ...span, start: span.start + 1, end: span.end - 1, text: span.text.trim() })), ...spansIn(state, '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', 'IP_ADDRESS')]
       } else if (question.preset === 'halu') {
         out[id] = state.context.includes('MIT') ? [] : spansIn(state.answer, 'MIT licensed', 'unsupported')
+      } else if (question.type === 'span' && question.over === 'context') {
+        out[id] = spansIn(state.context, 'requires-python = "[^"]+"', 'evidence')
       } else if (question.type === 'span' && question.over === 'command') {
         out[id] = spansIn(state.command, 'reset --hard \\S+', 'DANGEROUS')
       } else if (question.type === 'span' && question.over === 'passage') {
@@ -145,6 +150,9 @@ function fakeDecisions({ delayMs = 0 } = {}) {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         requests.push({ model: body.model, ids: Object.keys(body.questions), more: Object.values(body.states ?? {}).map(input => Object.keys(input.questions)) })
         Object.defineProperty(requests.at(-1), 'stateChars', { value: (typeof body.state === 'string' ? body.state : JSON.stringify(body.state)).length })
+        // the service's estimate: every question reads its state again, about a token per UTF-8 byte
+        const bytes = state => Buffer.byteLength(typeof state === 'string' ? state : JSON.stringify(state))
+        Object.defineProperty(requests.at(-1), 'estimate', { value: bytes(body.state) * Object.keys(body.questions).length + Object.values(body.states ?? {}).reduce((sum, input) => sum + bytes(input.state) * Object.keys(input.questions).length, 0) })
         // a Vela 3.0 model answers the decisions with its d3 base, and the span questions too
         const vela3 = body.model === 'vllm-sr/vela3-turbo'
         const of = (questions, state) => (vela3 ? { answers: answer(questions, state), spans: spansFor(questions, state) } : { answers: answer(questions, state) })
@@ -361,6 +369,23 @@ test('the system_one tool reads relative paths in the session\'s working directo
   assert.deepEqual(asked[0].angry, { type: 'noul', instructions: 'Is this angry?\nyes: shouts or uses "!"\nno: calm' })
 })
 
+test('the plugin registers system_one and system_one_screen, and tells System Two when to use each', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const plugin = await import('../src/index.js')
+  for (const [screenTool, expected] of [[true, ['system_one', 'system_one_screen']], [false, ['system_one']]]) {
+    const { ctx, config, close } = harness('http://127.0.0.1:9', { tool: true, screenTool, screenModel: 'vllm-sr/vela3-turbo' })
+    t.after(close)
+    const tools = []
+    let prompt
+    ctx.tools.register = definition => tools.push(definition.name)
+    ctx.systemPrompt.section = section => (prompt = section.text)
+    plugin.apply(ctx, config)
+    assert.deepEqual(tools, expected)
+    assert.match(prompt, /finding personal data or error codes, checking claims against docs, checking images\), call the system_one tool/)
+    assert.equal(/call system_one_screen on each one: it gives the pixel to click/.test(prompt), screenTool)
+  }
+})
+
 test('a question without a type takes the one its criteria imply', async () => {
   const { parseQuestions } = await import('../src/tool.js')
   const questions = parseQuestions(JSON.stringify({
@@ -372,7 +397,7 @@ test('a question without a type takes the one its criteria imply', async () => {
   }))
   assert.deepEqual(Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, question.type])), { team: 'choice', urgency: 'score', angry: 'noul', churn: 'noul', where: 'box' })
   assert.deepEqual(questions.churn, { type: 'noul', instructions: 'Will they leave?\nYes: Threatens to cancel\nNo: No signal' })
-  assert.throws(() => parseQuestions({ odd: { type: 'boolean', instructions: 'Is it?' } }), /question "odd" needs type choice, noul, score or box/)
+  assert.throws(() => parseQuestions({ odd: { type: 'boolean', instructions: 'Is it?' } }), /question "odd" needs type choice, noul, score, box or span, a preset or a signal/)
 })
 
 test('a key the start created is told under the request, and Chat gets it as a record before the triage', async t => {
@@ -426,7 +451,7 @@ test('with a span model listed, the reflexes use spans: removed words, masked da
   process.env.S1_RECORDS_KEY = 'sk-vsr-test'
   const { server, url, asked, requests } = await fakeDecisions()
   const plugin = await import('../src/index.js')
-  const { ctx, config, handlers, agent, close } = harness(url, { spans: 'auto', spanModel: 'vllm-sr/vela3-turbo', shieldSpans: true, guardSpans: true, doneHalu: true, doneHaluAt: 0.6, privacy: true, privacyTools: ['bash'], privacyAt: 0.5, privacyLabels: ['PERSON', 'EMAIL_ADDRESS', 'PHONE_NUMBER'] })
+  const { ctx, config, handlers, agent, close } = harness(url, { spans: 'auto', spanModel: 'vllm-sr/vela3-turbo', shieldSpans: true, guardSpans: true, doneHalu: true, doneHaluAt: 0.6, doneEvidence: true, doneEvidenceAt: 0.5, privacy: true, privacyTools: ['bash'], privacyAt: 0.5, privacyLabels: ['PERSON', 'EMAIL_ADDRESS', 'PHONE_NUMBER'] })
   t.after(() => {
     close()
     server.close()
@@ -489,19 +514,23 @@ test('with a span model listed, the reflexes use spans: removed words, masked da
   assert.deepEqual([privacy.reflex, privacy.verdict, privacy.masked, privacy.model, privacy.labels], ['privacy', 'masked', 3, 'vllm-sr/vela3-turbo', { EMAIL_ADDRESS: 1, PHONE_NUMBER: 1, PERSON: 1 }])
   for (const secret of ['Ada Lovelace', 'ada@example.com', '555-019-2837']) assert.ok(!JSON.stringify(records).includes(secret), `${secret} stays out of the session's records`)
 
-  // the done-check: one request answers its questions, the unsupported claims and the refusal signal, and only the
-  // claim nothing read supports goes back
+  // the done-check: one request answers its questions, the unsupported claims, what backs the answer and the refusal
+  // signal, and only the claim nothing read supports goes back
   handlers.get('tools/result')({ name: 'read', callId: 'r1', arguments: { file_path: 'pyproject.toml' }, agent }, { isError: false, content: [{ type: 'text', text: 'requires-python = ">=3.11"' }] })
+  // System One's own summary of a batch backs nothing, even where the span model marks it
+  handlers.get('tools/result')({ name: 'system_one', callId: 's1', arguments: { file: 'deps.jsonl' }, agent }, { isError: false, content: [{ type: 'text', text: 'System One answered: requires-python = ">=3.10"' }] })
   handlers.get('session/event')(agent.session, { type: 'assistant/message', data: { turn: 1, step: 3, message: { content: [{ type: 'text', text: 'It needs Python 3.11 and it is MIT licensed.' }] } } })
   requests.length = 0
   await handlers.get('agent/turn-stopping')({ agent, turn: 1 })
-  assert.deepEqual(requests, [{ model: 'vllm-sr/vela3-turbo', ids: ['complete', 'checked', 'waiting', 'halu'], more: [['r_refusal']] }])
+  assert.deepEqual(requests, [{ model: 'vllm-sr/vela3-turbo', ids: ['complete', 'checked', 'waiting', 'halu', 'evidence'], more: [['r_refusal']] }])
   const done = records.at(-1).data
   assert.deepEqual([done.reflex, done.model, done.verdict, done.why, done.unsupported, done.spanModel], ['done', 'vllm-sr/vela3-turbo', 'continue', 'unsupported', 1, 'vllm-sr/vela3-turbo'])
   assert.equal(done.excerpts[0].find(part => part.mark).mark.text, 'MIT licensed')
   assert.match(agent.steered.content[0].text, /Nothing you read this turn supports these parts of your answer: "MIT licensed"\./)
+  // and the passage that backs the rest, with the read it came from
+  assert.deepEqual([done.backed, done.evidence], [1, [{ tool: 'read', source: 'pyproject.toml', text: 'requires-python = ">=3.11"', p: 0.96 }]])
   const halu = asked.find(questions => questions.halu)
-  assert.deepEqual(halu.halu, { preset: 'halu' })
+  assert.deepEqual([halu.halu, halu.evidence], [{ preset: 'halu' }, { type: 'span', criteria: ['evidence'], over: 'context' }])
 
   // an answer that declined is not sent back, even with a claim nothing read supports
   agent.steered = undefined
@@ -516,7 +545,7 @@ test('a long turn\'s done-check still fits the span model\'s state', async t => 
   process.env.S1_RECORDS_KEY = 'sk-vsr-test'
   const { server, url, requests } = await fakeDecisions()
   const plugin = await import('../src/index.js')
-  const { ctx, config, handlers, agent, close } = harness(url, { spans: 'auto', spanModel: 'vllm-sr/vela3-turbo', doneHalu: true, doneHaluAt: 0.6 })
+  const { ctx, config, handlers, agent, close } = harness(url, { spans: 'auto', spanModel: 'vllm-sr/vela3-turbo', doneHalu: true, doneHaluAt: 0.6, doneEvidence: true, doneEvidenceAt: 0.5 })
   t.after(() => {
     close()
     server.close()
@@ -532,8 +561,11 @@ test('a long turn\'s done-check still fits the span model\'s state', async t => 
   requests.length = 0
   await handlers.get('agent/turn-stopping')({ agent, turn: 1 })
   const [done] = requests
-  assert.deepEqual([done.model, done.ids.includes('halu')], ['vllm-sr/vela3-turbo', true])
+  assert.deepEqual([done.model, done.ids], ['vllm-sr/vela3-turbo', ['complete', 'checked', 'waiting', 'halu', 'evidence']])
   assert.ok(done.stateChars <= 32000, `${done.stateChars} code points`)
+  // five questions read that state: the request stays within the model's 131,072-token estimate
+  assert.ok(done.estimate <= 131072, `${done.estimate} estimated tokens`)
+  assert.ok(done.estimate > 80000, 'it still reads as much as fits')
   assert.equal(agent.session.records.at(-1).data.reflex, 'done')
   assert.equal(agent.session.records.at(-1).data.error, undefined)
 })
@@ -541,8 +573,30 @@ test('a long turn\'s done-check still fits the span model\'s state', async t => 
 test('every capability is on by default, and the guard and the done-check ask vllm-sr/vela3-turbo', async () => {
   const { Config } = await import('../src/index.js')
   const fallback = name => Config.shape[name].fallback
-  for (const name of ['guard', 'shield', 'triage', 'doneCheck', 'tool', 'autoKeys', 'privacy', 'signals', 'shieldSpans', 'guardSpans', 'doneHalu']) assert.equal(fallback(name), true, `${name} is on`)
-  assert.deepEqual([fallback('guardModel'), fallback('doneModel'), fallback('spanModel'), fallback('model'), fallback('spans')], ['vllm-sr/vela3-turbo', 'vllm-sr/vela3-turbo', 'vllm-sr/vela3-turbo', 'vllm-sr/d3-ultra', 'auto'])
+  for (const name of ['guard', 'shield', 'triage', 'doneCheck', 'tool', 'autoKeys', 'privacy', 'signals', 'shieldSpans', 'guardSpans', 'doneHalu', 'doneEvidence', 'screenTool']) assert.equal(fallback(name), true, `${name} is on`)
+  assert.deepEqual([fallback('guardModel'), fallback('doneModel'), fallback('spanModel'), fallback('model'), fallback('spans'), fallback('screenModel')], ['vllm-sr/vela3-turbo', 'vllm-sr/vela3-turbo', 'vllm-sr/vela3-turbo', 'vllm-sr/d3-ultra', 'auto', 'vllm-sr/vela3-turbo'])
+})
+
+test('privacy leaves the machine\'s own names, local addresses and the request\'s own words, and masks the people in a result', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const { server, url } = await fakeDecisions()
+  const plugin = await import('../src/index.js')
+  const { ctx, config, handlers, agent, close } = harness(url, { spans: 'auto', spanModel: 'vllm-sr/vela3-turbo', shield: false, triage: false, privacy: true, privacyTools: ['bash'], privacyAt: 0.5, privacyLabels: ['PERSON', 'EMAIL_ADDRESS', 'IP_ADDRESS'] })
+  t.after(() => {
+    close()
+    server.close()
+  })
+  plugin.apply(ctx, config)
+  const user = { role: 'user', content: [{ type: 'text', text: 'Set the billing contact to ops@example.com.' }], source: { kind: 'user' } }
+  await handlers.get('agent/pre-step')({ agent, messages: [user], turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+  const account = userInfo().username
+  const listing = `-rw-r--r-- 1 ${account} ${account} 52753 Nov  4 21:42 api-error-rate.png\n-rw-r--r-- 1 ${account} ${account} 34348 Nov  4 21:42 notes.txt\nThe console runs at http://127.0.0.1:8765/ and the printer at 192.168.1.20; typed ops@example.com`
+  const clean = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l1', arguments: { command: 'ls -la' }, agent }, { isError: false, content: [{ type: 'text', text: listing }] }, async () => ({ kind: 'accept', untouched: true }))
+  assert.equal(clean.untouched, true, 'nothing to mask')
+  assert.deepEqual([agent.session.records.at(-1).data.verdict, agent.session.records.at(-1).data.masked], ['clean', 0])
+  const mixed = await handlers.get('tools/post-execute')({ name: 'bash', callId: 'l2', arguments: { command: 'cat owners.txt' }, agent }, { isError: false, content: [{ type: 'text', text: `${listing}\nowner: Ada Lovelace <ada@example.com>, seen from 203.0.113.7` }] }, async () => ({ kind: 'accept' }))
+  assert.ok(mixed.content[0].text.endsWith(`${listing}\nowner: [PERSON] <[EMAIL_ADDRESS]>, seen from [IP_ADDRESS]`), mixed.content[0].text)
+  assert.deepEqual(agent.session.records.at(-1).data.labels, { PERSON: 1, EMAIL_ADDRESS: 1, IP_ADDRESS: 1 })
 })
 
 test('spans stay off while the span model does not list them', async t => {

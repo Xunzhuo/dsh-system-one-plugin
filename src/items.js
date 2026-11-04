@@ -43,14 +43,28 @@ export function parseCsv(text) {
   return body.map(cells => Object.fromEntries(header.map((name, index) => [name.trim(), cells[index] ?? ''])))
 }
 
+/**
+ * What System One reads of a record, and where each field sits in it (`segments`, UTF-16 ranges; `json` for a field
+ * that is not a string and reads as its JSON), so that the words a span question marks can be traced back to their field.
+ */
 function recordText(record, textField) {
-  if (typeof record === 'string') return record
+  if (typeof record === 'string') return { text: record, segments: [{ start: 0, end: record.length }] }
+  const shown = value => (typeof value === 'string' ? { value } : { value: JSON.stringify(value) ?? '', json: true })
   if (textField) {
-    const value = record[textField]
-    if (value === undefined) throw new Error(`text_field "${textField}" is not a field of the items`)
-    return typeof value === 'string' ? value : JSON.stringify(value)
+    if (record[textField] === undefined) throw new Error(`text_field "${textField}" is not a field of the items`)
+    const { value, json } = shown(record[textField])
+    return { text: value, segments: [{ field: textField, start: 0, end: value.length, ...(json ? { json } : {}) }] }
   }
-  return Object.entries(record).map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join('\n')
+  let text = ''
+  const segments = []
+  for (const [key, field] of Object.entries(record)) {
+    if (text) text += '\n'
+    text += `${key}: `
+    const { value, json } = shown(field)
+    segments.push({ field: key, start: text.length, end: text.length + value.length, ...(json ? { json } : {}) })
+    text += value
+  }
+  return { text, segments }
 }
 
 function recordId(record, idField, index) {
@@ -61,9 +75,18 @@ function recordId(record, idField, index) {
   return String(index + 1)
 }
 
+/** The format of a file of items, from its extension. */
+export function formatOf(file) {
+  const ext = extname(file).toLowerCase()
+  return ext === '.jsonl' || ext === '.ndjson' ? 'jsonl' : ext === '.json' ? 'json' : ext === '.csv' ? 'csv' : 'lines'
+}
+
 /**
  * @param {object} options - `cwd` is the directory image sources are shown relative to
- * @returns {Promise<Array<{id: string, text: string, images?: string[], source?: string}>>}
+ * @returns {Promise<Array<{id: string, text: string, images?: string[], source?: string, path?: string, record?: object | string,
+ *   segments?: Array<{field?: string, start: number, end: number, json?: boolean}>, key?: string, line?: number, cut?: boolean}>>}
+ *   `record` is what the item was read from, `key` its key in a JSON object, `line` its line in a file of lines, and
+ *   `cut` says that its text was longer than `maxChars`
  */
 export async function loadItems({ file, items, images, textField, idField, maxItems, maxChars, cwd = process.cwd() }) {
   const out = []
@@ -72,14 +95,16 @@ export async function loadItems({ file, items, images, textField, idField, maxIt
       const type = IMAGE_TYPES[extname(path).toLowerCase()]
       if (!type) throw new Error(`unsupported image type: ${path} (use PNG, JPEG or WebP)`)
       const data = await readFile(path)
-      out.push({ id: path.split('/').pop() ?? String(index + 1), text: '', images: [`data:${type};base64,${data.toString('base64')}`], source: relative(cwd, path) || path })
+      out.push({ id: path.split('/').pop() ?? String(index + 1), text: '', images: [`data:${type};base64,${data.toString('base64')}`], source: relative(cwd, path) || path, path })
     }
   }
   if (file) {
     const raw = await readFile(file, 'utf8')
-    const ext = extname(file).toLowerCase()
+    const format = formatOf(file)
     let records
-    if (ext === '.jsonl' || ext === '.ndjson') {
+    let keys
+    let lines
+    if (format === 'jsonl') {
       records = raw.split('\n').filter(line => line.trim()).map((line, index) => {
         try {
           return JSON.parse(line)
@@ -87,23 +112,34 @@ export async function loadItems({ file, items, images, textField, idField, maxIt
           throw new Error(`${file}:${index + 1} is not valid JSON`)
         }
       })
-    } else if (ext === '.json') {
+    } else if (format === 'json') {
       const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) keys = Object.keys(parsed)
       records = Array.isArray(parsed) ? parsed : Object.values(parsed)
-    } else if (ext === '.csv') {
+    } else if (format === 'csv') {
       records = parseCsv(raw)
     } else {
-      records = raw.split('\n').map(line => line.trim()).filter(Boolean)
+      lines = []
+      records = []
+      raw.split('\n').forEach((line, at) => {
+        if (!line.trim()) return
+        lines.push(at)
+        records.push(line.trim())
+      })
     }
     records.forEach((record, index) => {
-      out.push({ id: recordId(record, idField, index), text: recordText(record, textField) })
+      const { text, segments } = recordText(record, textField)
+      out.push({ id: recordId(record, idField, index), text, record, segments, ...(keys ? { key: keys[index] } : {}), ...(lines ? { line: lines[index] } : {}) })
     })
   }
-  for (const [index, text] of (items ?? []).entries()) out.push({ id: String(index + 1), text })
+  for (const [index, text] of (items ?? []).entries()) out.push({ id: String(index + 1), text, record: text, segments: [{ start: 0, end: text.length }] })
   if (out.length === 0) throw new Error('nothing to judge: pass file, items, or images')
   if (out.length > maxItems) throw new Error(`${out.length} items is more than the limit of ${maxItems}`)
   for (const item of out) {
-    if (item.text.length > maxChars) item.text = `${item.text.slice(0, maxChars)}…`
+    if (item.text.length > maxChars) {
+      item.text = `${item.text.slice(0, maxChars)}…`
+      item.cut = true
+    }
   }
   return out
 }

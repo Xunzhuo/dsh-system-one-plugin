@@ -73,15 +73,47 @@ export function replaceSpans(text, spans, mask) {
 export const maskLabel = span => `[${span.label || 'PII'}]`
 
 /**
+ * `text` with the `hidden` spans replaced by their `[LABEL]`, and `spans` moved onto the new text, so that an excerpt
+ * of what one question marked does not show what another found to be personal. A hidden span that overlaps one of
+ * `spans` stays as it is.
+ */
+export function maskAround(text, spans, hidden) {
+  const cuts = hidden.filter(cut => !spans.some(span => span.start < cut.end && span.end > cut.start)).sort((a, b) => a.start - b.start)
+  let out = ''
+  let cursor = 0
+  const moves = []
+  for (const cut of cuts) {
+    if (cut.start < cursor) continue
+    out += text.slice(cursor, cut.start) + maskLabel(cut)
+    cursor = cut.end
+    moves.push({ at: cut.end, by: out.length - cut.end })
+  }
+  out += text.slice(cursor)
+  const moved = index => index + (moves.findLast(move => move.at <= index)?.by ?? 0)
+  return { text: out, spans: spans.map(span => ({ ...span, start: moved(span.start), end: moved(span.end) })) }
+}
+
+/**
  * Up to `max` short excerpts of `text` around the spans, for Chat: plain parts and marked parts. With `hide`, a marked
- * part carries only its label, so personal data never leaves the text it was found in.
+ * part carries only its label, so personal data never leaves the text it was found in. With `rank`, the excerpts with
+ * the most probable spans come first, still marking every span they show.
  * @returns {Array<Array<{text?: string, mark?: {label: string, probability: number, text?: string}}>>}
  */
-export function excerpts(text, spans, { around = 48, max = 3, hide = false, clip = 160 } = {}) {
+export function excerpts(text, spans, { around = 48, max = 3, hide = false, clip = 160, rank = false } = {}) {
   const groups = []
   for (const span of spans) {
-    const from = Math.max(0, span.start - around)
-    const to = Math.min(text.length, span.end + around)
+    let from = Math.max(0, span.start - around)
+    let to = Math.min(text.length, span.end + around)
+    // an excerpt starts and ends between words when there is a space to cut at
+    if (from > 0 && /\S/.test(text[from - 1])) {
+      const space = text.slice(from, span.start).search(/\s/)
+      if (space >= 0) from += space + 1
+    }
+    if (to < text.length && /\S/.test(text[to])) {
+      const tail = text.slice(span.end, to)
+      const space = Math.max(tail.lastIndexOf(' '), tail.lastIndexOf('\n'), tail.lastIndexOf('\t'))
+      if (space >= 0) to = span.end + space
+    }
     const last = groups.at(-1)
     if (last && from <= last.to) {
       last.to = Math.max(last.to, to)
@@ -91,7 +123,8 @@ export function excerpts(text, spans, { around = 48, max = 3, hide = false, clip
     }
   }
   const flat = value => value.replace(/\s+/g, ' ')
-  return groups.slice(0, max).map(group => {
+  const best = group => Math.max(...group.spans.map(span => span.probability))
+  return (rank ? [...groups].sort((x, y) => best(y) - best(x)) : groups).slice(0, max).map(group => {
     const parts = []
     let cursor = group.from
     if (group.from > 0) parts.push({ text: '…' })

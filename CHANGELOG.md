@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.6.0 (2026-11-04)
+
+System One answers more than verdicts: the `system_one` tool marks words with labels System Two invents, finds
+personal data and writes a redacted copy, checks items against their sources, asks the router's signals and boxes what
+it finds on images; a new tool, `system_one_screen`, is the eyes of computer use; and the done-check shows what backs
+an answer.
+
+- **Span questions in the `system_one` tool** (answered by `span_model`, `vllm-sr/vela3-turbo`):
+  - custom labels, as `{"type": "span", "criteria": {"ERROR": "…", "COMPETITOR": "…"}}`: the words that carry each
+    label, with a probability each; `threshold` drops the less likely ones;
+  - presets: `{"preset": "pii"}` (the nine sensitive labels, or those `labels` picks; from `privacyAt`, 0.5, as the
+    privacy reflex), `{"preset": "halu"}` (what an item's `sources` do not support) and `{"preset": "evidence"}` (the
+    words of the sources that back the item, with their file and line);
+  - router signals, as `{"signal": "attack"}`: `attack`, `p_harm`, `domain`, `factcheck`, `feedback`, `modality`,
+    `scenario`, and `r_harm` and `r_refusal` over a `user` and an `answer` (`state_fields`). Each is sent under its
+    trained name, whatever System Two calls it.
+  - Decision and span questions go out in one call, each to its model; an id that names a signal never reaches that
+    signal's head by accident.
+  - A label set written as a choice (one option, or options named in capitals under "Mark …") is asked as a span
+    question, a `type` beside the questions applies to those without one, and a question that fails for its items
+    says why.
+- **Requests stay within the Decision API's estimate**, which counts a state once for every question that reads it
+  (131,072 tokens a request): the tool cuts its batches by bytes and questions, refuses an item no request could read,
+  and the done-check fits what the turn read to its five questions (with the halu and evidence spans it would
+  otherwise be refused on a long turn, `request_too_long`); privacy batches its windows the same way.
+- **New parameters**: `sources` (the files items should agree with), `state_fields` (the parts of each record a
+  question reads), `redact` (a copy of the items with what `pii` marked, or else what the span questions marked,
+  replaced by its `[LABEL]`, in the input's format, nested fields included) and `annotate` (PNG copies of the images
+  with the boxes found drawn in red, decoded and encoded without dependencies). A question keeps only the fields the
+  Decision API reads; a box target written as `target`, `what`, `find` or `id` becomes its instructions.
+- **`system_one_screen`** (`screenTool`, `screenModel` `vllm-sr/vela3-turbo`): on one screenshot, `find` returns the box
+  and the pixel to click of each target, `check` and `expect` say what the screen shows, and `before` with `action` says
+  whether the last action worked, from the two screenshots (`before` alone is judged as the last step). `annotate`
+  saves a copy with the boxes in red and the click points in blue, beside the screenshot when given its own path.
+  System Two is told to use it at each step of computer use.
+- **Done-check**: the same one request to `vllm-sr/vela3-turbo` also marks the passages of what the turn read that back
+  the answer (`evidence`, `doneEvidence`, `doneEvidenceAt`); the card lists them under **Backed by**, with the tool and
+  file each came from (fact `backed`).
+- **In the Web UI**, in 0.5.2's tool-row style with one model name in each head:
+  - a span question shows its labels in their own hues, a tag for its preset or signal, and up to three items with the
+    words marked around their most probable mark (personal data only as its label); a grounded one the backing
+    passage with its `file:line`; a mixed batch names its span model inside the card ("Spans by");
+  - a batch of images shows each image with the boxes found on it; the redacted copy, the annotated images and the
+    sources are links;
+  - a `system_one_screen` card shows the screenshot with each target's box and click point, the answers, and after an
+    action the screens before and after with **Worked** or **Did not work** (red only on that verdict, the frame stays
+    blue). Images are read once each through the Web UI's workspace files service and are never sent to System Two.
+  - New selectors: `data-system-one="screen"` with `-image`, `-found`, `-expect` and `-action`; parts `qtag`,
+    `examples`, `example`, `source`, `images`, `image`, `shot`, `box`, `point`, `targets`, `target`, `click`, `checks`,
+    `expect`, `action`, `before`, `after`, `redacted`, `annotated`, `sources`, `evidence`, `backing`; the question's
+    `data-system-one-kind`.
+- **Privacy** leaves what is not personal data unmasked: the machine's own account and host names (as in `ls -la`),
+  loopback and private network addresses, and the words the user wrote in the request itself.
+- **Triage** asks "unclear?" as whether the request leaves out what to do or what to work on (47 of 48 right on our
+  48-request probe set).
+
 ## 0.5.2 (2026-11-04)
 
 System One's line looks and moves like the Web UI's own tool rows, every card stays blue, and the guard and the
