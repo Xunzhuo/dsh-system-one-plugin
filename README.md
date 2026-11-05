@@ -20,7 +20,7 @@ and `vllm-sr/auto` at `https://app.vllm-sr.ai/v1/chat/completions`.
 
 ```bash
 npm install -g @deepseek-ai/dsh pnpm
-dsh plugin --profile web add @vllm-sr/dsh@0.6.10
+dsh plugin --profile web add @vllm-sr/dsh@0.6.11
 dsh web
 ```
 
@@ -40,7 +40,7 @@ in the app and System One keeps working beside it.
 Headless:
 
 ```bash
-dsh plugin --profile headless add @vllm-sr/dsh@0.6.10
+dsh plugin --profile headless add @vllm-sr/dsh@0.6.11
 dsh headless "Triage tickets.jsonl: route each ticket, score its urgency, flag churn risk"
 ```
 
@@ -120,13 +120,39 @@ lines of a text file, a list of strings, or images. It writes the rubric; each q
 Span questions, presets and signals go to `span_model` (`vllm-sr/vela3-turbo`), the others to `model`, in one call.
 Each call writes one result row per item (`<file>.s1.jsonl` beside its file, `<folder>.s1.jsonl` beside a folder of
 images, or a CSV) and returns a summary System Two reads instead of the items. A question carries only `type`,
-`instructions` and `criteria` (span questions also `over` and `threshold`); other fields are dropped. Instructions
-written as `question`, `description` or `prompt` count, and so does a box question's target written as `target`,
-`what`, `find` or `id`. A label set written as a choice (one option, or options named in capitals under instructions
-such as "Mark the words of …") is asked as a span question, and a `type` written beside the questions applies to those
-that have none. A question that fails for its items says why in the summary. Requests stay within the Decision API's
-estimate, which counts an item's state once for every question that reads it; an item no request could read is
-refused with what to change. Beside the rubric:
+`instructions` and `criteria` (span questions also `over` and `threshold`); other fields are dropped. A question
+that fails for its items says why in the summary. Requests stay within the Decision API's estimate, which counts an
+item's state once for every question that reads it; an item no request could read is refused with what to change.
+
+System Two writes a rubric in many shapes. A shape that can mean one thing only is read as that thing, and the
+summary's **Notes** line says how, so a wrong reading can be put right:
+
+- a span question's labels written as its own fields (`{"type": "span", "ERROR": "…", "COMPETITOR": "…"}`), as a list
+  of labels, as text (`"ERROR: an error code; COMPETITOR: another product"`) or under `labels`; a choice's options as
+  a list or under `options`; a score's levels as an object or under `levels`;
+- a `threshold`, `type` or `instructions` written beside the questions (they are theirs), one question written in
+  place of the object of questions or wrapped in its type (`{"where": {"box": {...}}}`), a list of questions with
+  their ids, a question id written twice (its two halves joined, or two different questions both asked), the object
+  written as JSON text twice over, JSON that ends before its last brackets or with one too many, and the next
+  arguments run into `questions` by the model's tool-call markup;
+- other names for a type (`yes_no`, `classification`, `rating`, `bbox`, `spans`), a preset (`hallucination`) or a
+  signal (`jailbreak`), instructions written as `question`, `description`, `prompt` or `query`, a box question's target
+  as `target`, `what`, `find` or `id`, a threshold as text, as a whole percentage or as `{"min": 0.5}`;
+- a label set written as a choice (one option, or options named in capitals under instructions such as "Mark the
+  words of …") is asked as a span question;
+- `redact` without a pii or span question replaces personal data (preset pii is asked for it); where no copy can be
+  made (halu and evidence mark words against sources), the questions are answered without one; one path given as both
+  `output` and `redact` is the copy's, and the results take their default name. `annotate` without a box question
+  answers the questions and draws nothing; `annotate: true` draws a copy beside each image;
+- `text_field` naming several fields (`"subject,body"`) or a field in another case; a signal that reads one text
+  (`attack`, `p_harm`, ...) asked beside `r_harm` with `state_fields` reads each record's `user` part;
+- a question the items cannot answer at all (a span question of images, a box question of text) is left out when
+  others remain, and an image that does not exist is left out when others do.
+
+What still cannot be asked is refused before any request, with how to write it: a span question without labels shows
+the shape it takes, and a path that does not exist names what its folder holds, as
+`image metrics/charts/chart_01.png does not exist; metrics/charts/ holds active-users.png, api-error-rate.png, …`.
+Beside the rubric:
 
 - `sources`: the files the items should agree with (docs, a policy, a changelog), for `halu` and `evidence`.
 - `state_fields`: the fields of each record a question reads, as `{"user": "question", "answer": "reply"}`. With
@@ -136,7 +162,8 @@ refused with what to change. Beside the rubric:
   `[LABEL]`, in the input's format: `true` for `<file>.redacted.<ext>`, or a path. Each item's id stays, as do the
   ids in its text that the span model takes for names (`C-2087`), and a marked person's name is masked wherever it
   or a part of it recurs in the item.
-- `annotate`: a directory for PNG copies of the images with the boxes found drawn in red.
+- `annotate`: a directory for PNG copies of the images with the boxes found drawn in red, or `true` for a copy beside
+  each image (`<name>.annotated.png`).
 
 The results file holds one row per item: its id, its answers and the start of its text. A call that asks `attack`,
 `p_harm`, `r_harm` or `r_refusal` keeps ids and answers only, so reading the results brings none of the flagged
@@ -152,8 +179,11 @@ For computer use, System One is the eyes of each step. System Two gives it one s
 - `expect`: what the screen should show now, in words; answered yes or no.
 - `before` and `action`: the screenshot from before the last action and what that action was; System One says
   whether it worked, from the two screenshots (`before` alone is judged as the last step of the task).
-- `annotate`: a PNG copy with the boxes in red and the click points in blue (beside the screenshot when given its own
-  path).
+- `annotate`: a PNG copy with the boxes in red and the click points in blue: a `.png` path, a folder for it (a path
+  without an image extension), or `true` for one beside the screenshot.
+
+What to ask written under another name (`targets` for `find`, `checks` for `check`, `expected` for `expect`), a
+question written alone as `question`, and a box question written as a check are read as what they mean.
 
 It answers in about a second (`screenModel`, `vllm-sr/vela3-turbo` by default). Coordinates are pixels of the
 screenshot, from its top left corner.
@@ -185,6 +215,12 @@ a second up):
   struck through, a command's dangerous part, unsupported claims of the answer underlined, and masked personal data as
   label chips in a **Privacy** card.
 
+A `system_one` or `system_one_screen` call whose arguments System Two got wrong leaves no row: System Two reads the
+error, corrects the call and calls again, and the call that works is the one Chat shows, in a recorded session too.
+The error stays in the session's log and the local trace. A call that found System One unavailable after its retries
+(unreachable, busy, out of quota, no valid key) is one calm line, **Unavailable**, with what happened and the details
+one click away, and System Two goes on without it; a stopped call says **Stopped**.
+
 Routine checks (an allowed call, a clean result) are one line. When a turn ends, DeepSeek Harness folds its work
 ("Completed in …", "Ran commands"), and System One stays outside the fold: each line and card keeps its place, and each
 `system_one` or `system_one_screen` call keeps one line (**System One**, the latency, the verdict) that opens its card
@@ -207,7 +243,7 @@ attributes that say what it shows:
 | --- | --- |
 | `data-system-one` | `card`, `compact` (one line), `tool` (the `system_one` row, and the line a finished turn keeps for each call), `screen` (the same for `system_one_screen`) or `notice` (the free-key line) |
 | `data-system-one-reflex` | `triage`, `guard`, `shield`, `privacy`, `done`, `tool`, `screen` or `key` |
-| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; privacy `masked` or `clean`; done-check `stop` or `continue`; tool and screen `running` or `done`; key `created` or `failed`; `deciding` while System One has not answered yet, `cancelled` when the turn stopped first; `error` when System One did not answer |
+| `data-system-one-verdict` | triage `brief`; guard `allow`, `ask` or `deny`; shield `clean`, `removed` or `flagged`; privacy `masked` or `clean`; done-check `stop` or `continue`; tool and screen `running`, `done`, `unavailable` (System One could not answer the call) or `retried` (an argument error: a hidden element, `hidden` and `data-system-one-hidden="arguments"`, that draws nothing); key `created` or `failed`; `deciding` while System One has not answered yet, `cancelled` when the turn or the call stopped first; `error` when System One did not answer a reflex |
 | `data-system-one-outcome` | guard, once you answer its approval: `allowed`, `rejected`, `cancelled` or `failed` |
 | `data-system-one-why` | done-check: `complete`, `waiting`, `declined`, `unfinished`, `unchecked` or `unsupported` |
 | `data-system-one-tone` | the tone of what it decided: `ok` and `info` (blue), `warn` (amber: it asks you, or sends System Two back), `bad` (red: it blocked or removed something) or `muted`; a card's frame is blue whatever its tone |
@@ -223,7 +259,8 @@ attributes that say what it shows:
 Inside a root, `data-system-one-part` marks `icon` (the line's icon slot), `badge` (**System One**, in blue),
 `latency`, `reflex`, `summary`, `model`, `head`, `toggle` (the button of a one-line element), `rows`, `verdict`,
 `outcome`, `subject`, `facts`, `note`, `span-model` (a second model, named in a card), `more` and `progress` (the
-shimmer while it decides), in the batch row also `stack`, `legend`, `failed`, `results` and `raw`, and in the free-key
+shimmer while it decides), in the batch row also `stack`, `legend`, `failed`, `results` and `raw` (and, in an
+**Unavailable** line opened, `inspect`: DeepSeek Harness's inspector for the call), and in the free-key
 line `icon`, `badge` (**System Duo**), `summary` and `links`. Span answers add `excerpts`, each `excerpt`, every marked
 `span` (with `data-system-one-span-label` and `data-system-one-probability`) and, in a Privacy card, the `labels`. A
 done-check's passages are `evidence`, each `backing` with its `source`. Each batch question (`data-system-one-question`,

@@ -64,6 +64,24 @@ export function createRecorder({ append, ui, onError }) {
   }
 }
 
+// System One unavailable after its retries (src/client.js unavailableText, and the Decision API's own errors)
+const SERVICE = /^(?:Error:\s*)?(?:System One is unavailable\b|Decision API (?:unreachable\b|5\d\d\b|429\b|401\b|403\b)|no System One key\b)/
+// a call that was stopped, or not allowed to run
+const STOPPED = /\btool call aborted\b|\baborted before dispatch\b|\bthe user rejected tool\b|\bapproval for tool\b.*\bwas cancelled\b|\bno approval channel\b/
+
+/**
+ * How a system_one or system_one_screen call that ended in an error ended: 'service' (System One was unavailable),
+ * 'stopped', or 'arguments' (anything else the call asked for, which System Two reads in the error and corrects). The
+ * Web UI draws no row for the last, one calm line for the others (web/client.js, which reads older records' text the
+ * same way).
+ */
+export function failureOf(message) {
+  const said = String(message ?? '').trim()
+  if (SERVICE.test(said)) return 'service'
+  if (STOPPED.test(said)) return 'stopped'
+  return 'arguments'
+}
+
 /**
  * What became of a call the guard asked about, read from the call's final result: the harness turns a rejected or
  * cancelled approval into an error whose message says so.

@@ -2,12 +2,13 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { REQUEST_TOKENS, compactAnswer, requestSlices, stateCost } from './client.js'
+import { REQUEST_TOKENS, compactAnswer, requestSlices, stateCost, unavailable, unavailableText } from './client.js'
 import { formatOf, loadItems } from './items.js'
+import { kindAt, mustBeFile, noFile } from './paths.js'
 import { annotatePng, imageSize } from './png.js'
 import { ROUTER_SIGNALS, SENSITIVE_LABELS } from './questions.js'
 import { csvCell, everywhere, joined, redactItem, writeRedacted } from './redact.js'
-import { parseQuestions, planQuestions } from './rubric.js'
+import { kindOf, planQuestions, readQuestions, splitArguments, unanswerable } from './rubric.js'
 import { excerpts, labelCounts, maskAround, notPersonal, placeSpans, trimSpan } from './spans.js'
 import { clip } from './trace.js'
 
@@ -29,23 +30,41 @@ const BATCH_LIMITS = { retries: 6, waitMs: 60000 }
 // read, so their results keep ids and answers only
 const SAFETY_SIGNALS = new Set(['attack', 'p_harm', 'r_harm', 'r_refusal'])
 
-const DESCRIPTION = `Ask System One, a fast decision model, typed questions about many items at once (text records, files' lines, or images) and get calibrated probabilities back in seconds, instead of reading the items yourself. Use it whenever the same judgment applies to many items: routing, labeling, filtering, triage, scoring, ranking, moderation, finding personal data, checking claims against sources, spotting problems in screenshots.
+// one question of each kind, as the description and the questions parameter show them
+export const EXAMPLE_QUESTIONS = {
+  team: { type: 'choice', instructions: 'Which team should handle this ticket?', criteria: { billing: 'payments, invoices, refunds', engineering: 'bugs, errors, outages', sales: 'plans and pricing' } },
+  angry: { type: 'noul', instructions: 'Is the customer angry?' },
+  urgency: { type: 'score', instructions: 'How urgent is this ticket?', criteria: ['1 = can wait', '2 = this week', '3 = today'] },
+  marks: { type: 'span', criteria: { ERROR: 'an error code or message the customer quotes', COMPETITOR: 'another product the customer names' }, threshold: 0.5 },
+  personal: { preset: 'pii' },
+  jailbreak: { signal: 'attack' },
+}
+const asJson = value => JSON.stringify(value)
 
-You write the rubric as questions; System One answers every question for every item, writes one result row per item to an output file (JSONL or CSV) and returns a summary. Read the output file afterwards only for the rows you need.
+const DESCRIPTION = `Ask System One, a fast decision model, typed questions about many items at once (the records of a JSONL, JSON or CSV file, the lines of a text file, a list of strings, or images) and get calibrated probabilities back in seconds, instead of reading the items yourself. Use it whenever the same judgment applies to many items: routing, labeling, filtering, triage, scoring, ranking, moderation, finding personal data, checking claims against sources, spotting problems in screenshots.
 
-Question types:
-- "choice": pick one option. criteria: an object of option name -> short description (2 or more options).
-- "noul": yes or no, with no criteria: say in the instructions what counts as yes. The answer is the probability of yes.
-- "score": an ordered scale. criteria: a list of level descriptions, lowest first (2 to 10). The answer is the expected level: 0 for the first, or the levels' own numbers when each starts with one, as ["1 = vague", "2 = clear", "3 = concrete"].
-- "box": where something is in an image (images only), as {"type": "box", "instructions": "the spike in the plotted line"}: instructions name the target. The answer is a box in fractions of the image, with a confidence (below 0.4: not found).
-- "span": which words of each text carry a label: use it whenever you want the words themselves (error codes, product names, requests, quotes), not one category per item. One span question names all its labels in criteria, an object of LABEL -> what it marks (or a list of labels), and marks every label's words in every item. The answer lists the marked words, each with a probability. Describe each label precisely, and say in context what the items are and whose they are (e.g. "Support tickets sent to Lumen Cloud"), so a label such as COMPETITOR knows which product is yours. threshold (0 to 1) drops marks less probable than it.
-- Presets, as {"preset": "pii"}: "pii" marks personal data (${SENSITIVE_LABELS.join(', ')}; "labels" picks others it knows, such as ORGANIZATION, DATE_TIME and GPE, or "all"); "halu" marks the words of each item that its sources do not support; "evidence" marks the words of the sources that back each item. halu and evidence need sources.
-- Router signals, as {"signal": "attack"}: the vLLM Semantic Router's trained questions: attack (jailbreak or benign), p_harm (unsafe or safe request), domain (subject area), factcheck, feedback, modality, scenario; r_harm and r_refusal read a user request and an answer (state_fields {"user": ..., "answer": ...}; records with fields "user" and "answer" need none).
+System One answers every question for every item, writes one result row per item to an output file (JSONL or CSV) and returns a summary. Read the output file afterwards only for the rows you need.
+
+questions is one object: each key is an id you choose, each value one question. The kinds, one example each:
+- choice: pick one option; criteria names 2 or more options, each with a short description. ${asJson({ team: EXAMPLE_QUESTIONS.team })}
+- noul: yes or no, without criteria; instructions say what counts as yes; the answer is the probability of yes. ${asJson({ angry: EXAMPLE_QUESTIONS.angry })}
+- score: an ordered scale; criteria lists 2 to 10 levels, lowest first; the answer is the expected level, from 0, or on the levels' own numbers when each starts with one. ${asJson({ urgency: EXAMPLE_QUESTIONS.urgency })}
+- box (images only): where something is; instructions name it; the answer is a box in fractions of the image with a confidence (below 0.4: not found). ${asJson({ where: { type: 'box', instructions: 'the spike in the plotted line' } })}
+- span: the words of each text that carry your labels (error codes, product names, requests, quotes), not one category per item; criteria names every label with what it marks; threshold (0 to 1, optional) drops less probable marks. ${asJson({ marks: EXAMPLE_QUESTIONS.marks })}
+- preset: ${asJson({ personal: EXAMPLE_QUESTIONS.personal })} marks personal data (${SENSITIVE_LABELS.join(', ')}; "labels" picks others it knows, such as ORGANIZATION, DATE_TIME and GPE, or "all"); {"preset": "halu"} the words of each item its sources do not support; {"preset": "evidence"} the words of the sources that back each item. halu and evidence need sources.
+- signal: the vLLM Semantic Router's trained questions. ${asJson({ jailbreak: EXAMPLE_QUESTIONS.jailbreak })} asks attack (jailbreak or benign); also p_harm (unsafe or safe request), domain (subject area), factcheck, feedback, modality, scenario; r_harm and r_refusal judge an answer to a user request (records with fields "user" and "answer", or state_fields).
+
+Rules:
+- Every field of a question goes inside that question, under its own id: type, instructions, criteria, threshold. Use each id once; nothing else goes beside the questions.
+- A span question lists all its labels in criteria; its instructions, if any, only say what to look for. Describe each label precisely, and say in context what the items are and whose (e.g. "Support tickets sent to Lumen Cloud"), so a label such as COMPETITOR knows which product is yours.
+- box questions read images; span questions, presets and signals read text.
+- redact copies the items with what preset pii marked replaced by its [LABEL] (else what your span questions marked); annotate copies the images with the boxes found.
 Span questions, presets and signals are answered by span_model; choice, noul, score and box questions by model.
 
-Example questions: {"team": {"type": "choice", "instructions": "Which team should handle this ticket?", "criteria": {"billing": "Payments, invoices, refunds", "engineering": "Bugs, errors, outages", "sales": "Plans and pricing"}}, "urgency": {"type": "score", "instructions": "How urgent is this ticket?", "criteria": ["Low", "Normal", "Urgent"]}, "angry": {"type": "noul", "instructions": "Is the customer angry?"}, "mentions": {"type": "span", "criteria": {"ERROR": "an error code or message the customer saw", "COMPETITOR": "another product the customer compares us with"}}, "personal": {"preset": "pii"}, "jailbreak": {"signal": "attack"}}
-
 For one screenshot you act on (where to click, whether an action worked), use system_one_screen.`
+
+// the tool's parameters, for arguments that ran into questions (splitArguments)
+const PARAMETERS = Object.fromEntries(['questions', 'file', 'text_field', 'id_field', 'items', 'images', 'context', 'sources', 'state_fields', 'redact', 'annotate', 'output', 'model', 'span_model'].map(name => [name, true]))
 
 /** Where a call's rows go by default: beside its file, or beside the one folder its images are in. */
 function defaultOutput(cwd, file, images) {
@@ -177,6 +196,8 @@ function renderSummary(value) {
   const lines = [
     `System One (${models}) answered ${value.questions} question(s) for ${value.items} item(s) in ${value.seconds} s (${value.requests} requests). Results: ${value.output}`,
   ]
+  // what the call was read as, where it was written another way, so a wrong reading can be put right
+  if (value.notes?.length) lines.push(`Notes: ${value.notes.join('; ')}.`)
   for (const [id, s] of Object.entries(value.summary)) {
     if (s.type === 'span') {
       const counts = Object.entries(s.labels).map(([label, n]) => `${label} ${n}`)
@@ -273,18 +294,33 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
     name: config.toolName,
     description: DESCRIPTION,
     parameters: {
-      questions: { type: 'json', required: true, description: 'Question id -> question object, as in the examples above.' },
+      questions: {
+        type: 'json',
+        required: true,
+        description: 'One object: question id -> question ({"type": "choice" | "noul" | "score" | "box" | "span", "instructions": ..., "criteria": ...}, {"preset": "pii" | "halu" | "evidence"} or {"signal": ...}), as the description shows. Each question\'s fields go inside it.',
+        examples: [EXAMPLE_QUESTIONS],
+      },
       file: { type: 'string', description: 'Path to a .jsonl, .json (array), .csv, or .txt (one item per line) file holding the items.' },
-      text_field: { type: 'string', description: 'For .jsonl/.json/.csv: the field holding each item\'s text. Default: all fields.' },
+      text_field: { type: 'string', description: 'For .jsonl/.json/.csv: the field holding each item\'s text, or several, as "subject,body". Default: all fields.' },
       id_field: { type: 'string', description: 'For .jsonl/.json/.csv: the field holding each item\'s id. Default: "id" when present, else the row number.' },
       items: { type: 'array', items: { type: 'string' }, description: 'Inline items, for short lists without a file.' },
       images: { type: 'array', items: { type: 'string' }, description: 'Image paths (PNG, JPEG, WebP); each image is one item.' },
       context: { type: 'string', description: 'Text placed before every item: what the items are and whose (e.g. "Support tickets sent to Lumen Cloud, a data product"). It helps every question.' },
       sources: { type: 'array', items: { type: 'string' }, description: 'Files the items should agree with (docs, a policy, a changelog). Each item is checked against them: preset halu marks what they do not support, preset evidence the words of the sources that back the item.' },
-      state_fields: { type: 'json', description: 'For records: the parts System One reads of each item, as {"part": "field"}: "context" and "answer" for halu and evidence (with sources, a record\'s "context", as the message a reply answers, is read before them), "user" and "answer" for the signals r_harm and r_refusal.' },
-      redact: { type: 'json', description: 'Write a copy of the items with marked words replaced by their [LABEL]: the personal data a preset pii question found, else what the span questions marked. true for <file>.redacted.<ext>, or a path.' },
-      annotate: { type: 'string', description: 'For images with box questions: a directory to save copies of the images with the boxes found drawn in red (PNG).' },
-      output: { type: 'string', description: 'Where to write one result row per item (.jsonl or .csv). Default: <file>.s1.jsonl beside the input file, <folder>.s1.jsonl beside the images\' folder, or ./system-one-results.jsonl.' },
+      state_fields: {
+        type: 'json',
+        description: 'For records: the parts System One reads of each item, as {"part": "field"}: "context" and "answer" for halu and evidence (with sources, a record\'s "context", as the message a reply answers, is read before them), "user" and "answer" for the signals r_harm and r_refusal.',
+        examples: [{ user: 'question', answer: 'reply' }],
+      },
+      redact: {
+        oneOf: [{ type: 'boolean' }, { type: 'string' }, { type: 'null' }],
+        description: 'Write a copy of the items with what preset pii marked (else what the span questions marked) replaced by its [LABEL], in the input\'s format: true for <file>.redacted.<ext>, or a path. Without a pii or span question, personal data is what it replaces.',
+      },
+      annotate: {
+        oneOf: [{ type: 'boolean' }, { type: 'string' }, { type: 'null' }],
+        description: 'For images with box questions: a directory for copies of the images with the boxes found drawn in red (PNG), or true for a copy beside each image (<name>.annotated.png).',
+      },
+      output: { type: 'string', description: 'Where to write one result row per item (.jsonl or .csv), or a folder for them. Default: <file>.s1.jsonl beside the input file, <folder>.s1.jsonl beside the images\' folder, or ./system-one-results.jsonl.' },
       model: { type: 'string', description: `Decision model for choice, noul, score and box questions. Default ${config.model}.` },
       span_model: { type: 'string', description: `Model for span questions, presets and signals. Default ${config.spanModel}.` },
     },
@@ -294,19 +330,46 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       presentationMeta: (_args, value) => presentation(value, config.systemOneUi),
     },
     async execute(args, exec) {
-      const questions = parseQuestions(args.questions)
+      const notes = []
+      // the arguments System Two's tool-call markup ran into the questions, read as the arguments they are
+      const split = splitArguments(args.questions)
+      if (split) {
+        const known = Object.keys(split.leaked).filter(key => Object.hasOwn(PARAMETERS, key) && key !== 'questions' && args[key] === undefined)
+        args = { ...args, questions: split.head, ...Object.fromEntries(known.map(key => [key, split.leaked[key]])) }
+        notes.push(`questions ran into the next arguments${known.length ? `: ${known.join(', ')} read from them` : ''}`)
+      }
+      const read = readQuestions(args.questions)
+      let questions = read.questions
+      notes.push(...read.notes)
       const cwd = await workspaceOf(exec)
       const file = args.file ? resolve(cwd, args.file) : undefined
-      const images = args.images?.map(path => resolve(cwd, path))
+      if (file) await mustBeFile(cwd, args.file, 'file')
+      // an image that is not there is left out, and said; a call none of whose images is there is refused
+      let images
+      if (Array.isArray(args.images) && args.images.length) {
+        const found = []
+        const missing = []
+        for (const path of args.images) ((await kindAt(resolve(cwd, String(path)))) === 'file' ? found : missing).push(String(path))
+        if (found.length === 0) throw new Error(await noFile(cwd, missing[0], `image${missing.length > 1 ? ` (and ${missing.length - 1} more)` : ''}`))
+        if (missing.length) notes.push(`left out ${missing.length} image(s) that do not exist: ${listed(missing, 6)}`)
+        images = found.map(path => resolve(cwd, path))
+      }
       // the results and the redacted copy each take a file of their own, never the input's
-      const output = resolve(cwd, args.output || defaultOutput(cwd, file, images))
+      let output = resolve(cwd, args.output || defaultOutput(cwd, file, images))
+      if ((await kindAt(output)) === 'directory' || /[\\/]$/.test(args.output ?? '')) output = join(output, basename(defaultOutput(cwd, file, images)))
       if (output === file) throw new Error('output is where the results go: give it a path other than the input file')
-      const copies = args.redact !== undefined && args.redact !== false && args.redact !== 'false' && args.redact !== null
+      let copies = args.redact !== undefined && args.redact !== false && args.redact !== 'false' && args.redact !== null && args.redact !== ''
       const copyTo = !copies ? undefined : typeof args.redact === 'string' && args.redact !== 'true'
         ? resolve(cwd, args.redact)
         : file ? `${file.slice(0, file.length - extname(file).length)}.redacted${extname(file)}` : resolve(cwd, 'system-one-redacted.txt')
       if (copyTo && copyTo === file) throw new Error('redact writes a copy: give it a path other than the input file')
-      if (copyTo && copyTo === output) throw new Error('redact writes a copy beside the results: give it a path other than output')
+      // one path for both: the copy, which was asked for by name, takes it, and the results go where they go by default
+      if (copyTo && copyTo === output) {
+        const fallback = resolve(cwd, defaultOutput(cwd, file, images))
+        if (fallback === copyTo || fallback === file) throw new Error('redact writes a copy beside the results: give it a path other than output')
+        output = fallback
+        notes.push(`output and redact named one file: the redacted copy is written there, the results to ${relative(cwd, output) || output}`)
+      }
       const items = await loadItems({
         file,
         items: args.items,
@@ -318,7 +381,15 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         cwd,
       })
       const hasImages = items.some(item => item.images)
+      // a question these items cannot answer at all (a span question of images, a box question of text) is left out
+      // when others remain, and said
+      const cannot = Object.entries(questions).map(([id, question]) => [id, unanswerable(question, { images: hasImages })]).filter(([, why]) => why)
+      if (cannot.length && cannot.length < Object.keys(questions).length) {
+        questions = Object.fromEntries(Object.entries(questions).filter(([id]) => !cannot.some(([gone]) => gone === id)))
+        for (const [id, why] of cannot) notes.push(`not asked: ${id} (${why})`)
+      }
       const sourcePaths = (Array.isArray(args.sources) ? args.sources : typeof args.sources === 'string' ? [args.sources] : []).filter(Boolean)
+      for (const path of sourcePaths) await mustBeFile(cwd, path, 'source')
       const grounded = sourcePaths.length > 0
       // a signal that judges a reply reads the records' own "user" and "answer" fields when state_fields names none
       const needs = [...new Set(Object.values(questions).flatMap(question => ROUTER_SIGNALS[question.signal]?.parts ?? []))]
@@ -326,12 +397,42 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       const fields = fieldsOf(args.state_fields) ?? (own ? Object.fromEntries(needs.map(part => [part, part])) : undefined)
       if ((fields || grounded) && hasImages) throw new Error('sources and state_fields read text items, not images')
       const parts = fields || grounded ? [...new Set([...Object.keys(fields ?? {}), ...(grounded ? ['context', 'answer'] : [])])] : undefined
+      // a redacted copy replaces what pii or the call's own labels mark in each item's text: without either, it is
+      // personal data; where no copy can be made, the questions are answered and the copy is left out, and said
+      if (copies) {
+        const marking = Object.values(questions).filter(question => kindOf(question) === 'span' && !question.signal && question.preset !== 'halu' && question.preset !== 'evidence')
+        const cut = items.find(item => item.cut)
+        const none = hasImages ? 'the items are images'
+          : parts ? 'halu, evidence, sources and state_fields mark words against sources, not words to replace'
+            : cut ? `item ${cut.id} is longer than ${config.toolMaxChars} characters, and a copy needs each item whole` : undefined
+        if (none) {
+          copies = false
+          notes.push(`no redacted copy: ${none}`)
+        } else if (marking.length === 0) {
+          let id = 'pii'
+          while (Object.hasOwn(questions, id)) id = `${id}_`
+          questions = { ...questions, [id]: { preset: 'pii' } }
+          notes.push(`redact: no pii or span question said what to replace, so ${id} ({"preset": "pii"}) marks the personal data it replaces`)
+        }
+      }
       const model = args.model || config.model
       const spanModel = args.span_model || config.spanModel
       const { groups, asked } = planQuestions(questions, { model, spanModel, parts, images: hasImages })
       const boxIds = Object.entries(questions).filter(([, question]) => question.type === 'box').map(([id]) => id)
-      if (args.annotate && (!hasImages || boxIds.length === 0)) {
-        throw new Error('annotate draws the boxes that box questions find on images: add one to questions, as {"where": {"type": "box", "instructions": "the spike, drop or flatline"}}')
+      // where the annotated copies go: beside each image, into a folder, or (for one image) into a file
+      let annotateTo
+      if (args.annotate !== undefined && args.annotate !== null && args.annotate !== false && args.annotate !== 'false' && args.annotate !== '') {
+        if (!hasImages || boxIds.length === 0) {
+          notes.push('nothing annotated: annotate draws the boxes that box questions find on images; add one, as {"where": {"type": "box", "instructions": "the spike, drop or flatline"}}')
+        } else if (args.annotate === true || args.annotate === 'true') {
+          annotateTo = { beside: true }
+        } else {
+          const to = resolve(cwd, String(args.annotate))
+          const at = await kindAt(to)
+          if (/\.png$/i.test(to) && items.length === 1 && at !== 'directory') annotateTo = { file: to }
+          else if (at === 'file') throw new Error(`annotate names a folder for the annotated copies, and ${args.annotate} is a file: name a folder, as "metrics/annotated/", or pass true for a copy beside each image`)
+          else annotateTo = { dir: to }
+        }
       }
       const context = args.context?.trim()
       const sources = grounded ? await readSources(sourcePaths, cwd, context) : undefined
@@ -360,21 +461,28 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       const jobs = []
       for (const group of groups) {
         const asks = Object.keys(group.questions).length
+        // a group of signals that read one part of each item reads that part as its text
+        const texts = group.reads ? states.map(entry => ({ ...entry, state: String(entry.state[group.reads] ?? '') })) : states
         if (!hasImages) {
-          const heaviest = Math.max(...states.map(({ state }) => stateCost(state)))
+          const heaviest = Math.max(...texts.map(({ state }) => stateCost(state)))
           if (heaviest * asks > REQUEST_TOKENS) {
             throw new Error(`${asks} question(s) of ${group.model} over an item of about ${heaviest} bytes are more than one request may read (${REQUEST_TOKENS} tokens, each question reading the item again): ask fewer questions per call, or pass shorter items or sources`)
           }
         }
-        const slices = hasImages ? states.map((_, start) => ({ start, count: 1 })) : requestSlices(states.map(({ state }) => state), asks)
-        for (const { start, count } of slices) jobs.push({ group, start, count })
+        const slices = hasImages ? texts.map((_, start) => ({ start, count: 1 })) : requestSlices(texts.map(({ state }) => state), asks)
+        for (const { start, count } of slices) jobs.push({ group, start, count, texts })
       }
       const started = performance.now()
-      const answered = await Promise.all(jobs.map(async ({ group, start, count }) => {
-        const slice = states.slice(start, start + count).map(({ state, images: attached }) => ({ state, images: attached }))
-        const response = await client.ask({ model: group.model, questions: group.questions, inputs: slice, signal: exec.signal, ...BATCH_LIMITS })
-        return { group, start, response }
-      }))
+      let answered
+      try {
+        answered = await Promise.all(jobs.map(async ({ group, start, count, texts }) => {
+          const slice = texts.slice(start, start + count).map(({ state, images: attached }) => ({ state, images: attached }))
+          const response = await client.ask({ model: group.model, questions: group.questions, inputs: slice, signal: exec.signal, ...BATCH_LIMITS })
+          return { group, start, response }
+        }))
+      } catch (error) {
+        throw unavailable(error) ? new Error(unavailableText(error)) : error
+      }
       const seconds = Math.round((performance.now() - started) / 10) / 100
 
       const rows = items.map(item => ({ id: item.id, text: item.source ?? clip(item.text, 200), answers: {} }))
@@ -447,9 +555,6 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         const marks = Object.entries(questions).filter(([id, question]) => asked[id].kind === 'span' && question.preset !== 'halu' && question.preset !== 'evidence')
         const personal = marks.filter(([, question]) => question.preset === 'pii')
         const marking = (personal.length ? personal : marks).map(([id]) => id)
-        if (marking.length === 0 || parts) throw new Error('redact replaces what span questions mark in each item\'s text: ask preset pii or a span question with your labels, without sources or state_fields')
-        const cut = items.find(item => item.cut)
-        if (cut) throw new Error(`item ${cut.id} is longer than ${config.toolMaxChars} characters, and redact needs each item whole`)
         const out = copyTo
         let spanCount = 0
         let changed = 0
@@ -467,8 +572,8 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
       }
 
       let annotated
-      if (args.annotate) {
-        const dir = resolve(cwd, args.annotate)
+      if (annotateTo) {
+        const dir = annotateTo.dir ?? dirname(annotateTo.file ?? items[0].path)
         await mkdir(dir, { recursive: true })
         annotated = { dir, files: [], skipped: [] }
         for (const [index, item] of items.entries()) {
@@ -479,7 +584,7 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
             annotated.skipped.push(item.source)
             continue
           }
-          let out = join(dir, basename(item.path))
+          let out = annotateTo.file ?? (annotateTo.beside ? item.path : join(dir, basename(item.path)))
           if (out === item.path) out = `${out.slice(0, -extname(out).length)}.annotated.png`
           await writeFile(out, annotatePng(bytes, boxes.map(a => ({ box: a.box }))))
           annotated.files.push(relative(cwd, out) || out)
@@ -549,6 +654,7 @@ export function systemOneTool({ client, trace, config, workspaceOf = async () =>
         ...(redacted ? { redacted } : {}),
         ...(annotated ? { annotated } : {}),
         ...(sources ? { sources: sources.blocks.map(block => block.source) } : {}),
+        ...(notes.length ? { notes } : {}),
       }
       trace({
         ev: 's1',

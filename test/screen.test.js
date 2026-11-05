@@ -155,18 +155,35 @@ test('a screen step asks only what it is given, takes find as a list, and refuse
   assert.match(asked.at(-1).images[0], /^data:image\/jpeg;base64,/)
   assert.deepEqual(jpeg.size, { width: 200, height: 100 })
 
-  await assert.rejects(run({ image: 'shots/03.jpg', find: ['the chart'], annotate: 'true' }), /annotate draws on PNG screenshots/)
+  // a JPEG is answered, and only its annotated copy is left out
+  const unannotated = await run({ image: 'shots/03.jpg', find: ['the chart'], annotate: 'true' })
+  assert.deepEqual([unannotated.annotated, unannotated.notes], [undefined, ['no annotated copy: annotate draws on PNG screenshots']])
   await assert.rejects(run({ image: 'notes.txt', expect: 'x' }), /is not a PNG, JPEG or WebP image/)
-  await assert.rejects(run({ image: 'shots/02.png' }), /ask System One something/)
+  await assert.rejects(run({ image: 'shots/02.png' }), /^Error: ask System One something about shots\/02\.png: find \(what to locate, as \{"save":"the Save button of the billing form","error":"an error message"\}\), check \(questions about the screen\), expect \(what it should show\), or before with action$/)
+  await assert.rejects(run({ image: 'shots/02.png', context: 'The console.' }), /or before with action; this call gave only context$/)
   await assert.rejects(run({ image: 'shots/02.png', action: 'clicked' }), /action needs before/)
-  await assert.rejects(run({ image: 'shots/02.png', check: { where: { type: 'box', instructions: 'x' } } }), /check "where": ask a noul, choice or score question here/)
   await assert.rejects(run({ image: 'shots/02.png', check: { personal: { preset: 'pii' } } }), /check "personal"/)
+  // a screenshot that is not there names the screenshots its folder holds
+  await assert.rejects(run({ image: 'shots/04.png', expect: 'x' }), /^Error: image shots\/04\.png does not exist; shots\/ holds 01\.png, 02\.png$/)
 
   const beside = await run({ image: 'shots/02.png', find: ['the Save button'], annotate: 'true' })
   assert.equal(beside.annotated, 'shots/02.annotated.png')
   // a copy over the screenshot itself goes beside it instead
   const over = await run({ image: 'shots/02.png', find: ['the Save button'], annotate: 'shots/02.png' })
   assert.equal(over.annotated, 'shots/02.annotated.png')
+
+  // a folder for the copy, also one that does not exist yet
+  const folder = await run({ image: 'shots/02.png', find: ['the Save button'], annotate: 'marked' })
+  assert.equal(folder.annotated, 'marked/02.png')
+
+  // what to ask written under other names, a question written alone, and a box question written as a check
+  asked.length = 0
+  const other = await run({ image: 'shots/02.png', targets: { save: 'the Save button' }, question: 'Is the Billing page open?', check: { where: { type: 'box', instructions: 'the Save button' } } })
+  assert.deepEqual(Object.keys(other.found), ['save', 'where'])
+  assert.deepEqual(Object.keys(other.checks), ['question'])
+  assert.deepEqual(other.notes, ['targets read as find', 'question read as a yes/no check', 'check where is a box question: looked for under find'])
+  assert.match(rendered(other), /Notes: targets read as find; question read as a yes\/no check; check where is a box question: looked for under find\./)
+  assert.equal(screenPresentation(other, 'card').notes, undefined, 'how a call was read stays out of Chat')
 
   // before without its action is judged as the task's last step
   asked.length = 0

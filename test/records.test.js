@@ -3,7 +3,7 @@ import http from 'node:http'
 import { registerHooks } from 'node:module'
 import { userInfo } from 'node:os'
 import { test } from 'node:test'
-import { RECORD_TYPE, approvalOutcome, createRecorder, jsonSafe, relativeTo } from '../src/records.js'
+import { RECORD_TYPE, approvalOutcome, createRecorder, failureOf, jsonSafe, relativeTo } from '../src/records.js'
 
 // The DeepSeek Harness packages index.js imports come from the harness at run time; here they are small stand-ins.
 // The session stand-in refuses what the real log refuses: data that does not survive a JSON round trip.
@@ -281,7 +281,7 @@ test('a system_one call is recorded with its result facts, so the Web UI keeps i
   handlers.get('tools/result')({ name: 'bash', callId: 'b1', arguments: { command: 'ls' }, agent }, { isError: false, content: [] })
   assert.deepEqual(agent.session.records.map(entry => entry.data), [
     { v: 1, ui: 'card', reflex: 'tool', turn: 2, step: 3, callId: 's1', tool: 'system_one', session: agent.session.id, meta },
-    { v: 1, ui: 'card', reflex: 'screen', turn: 2, step: 3, callId: 's2', tool: 'system_one_screen', session: agent.session.id, error: 'shots/x.png is not a PNG, JPEG or WebP image' },
+    { v: 1, ui: 'card', reflex: 'screen', turn: 2, step: 3, callId: 's2', tool: 'system_one_screen', session: agent.session.id, error: 'shots/x.png is not a PNG, JPEG or WebP image', failure: 'arguments' },
   ])
 })
 
@@ -420,7 +420,31 @@ test('a question without a type takes the one its criteria imply', async () => {
   }))
   assert.deepEqual(Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, question.type])), { team: 'choice', urgency: 'score', angry: 'noul', churn: 'noul', where: 'box' })
   assert.deepEqual(questions.churn, { type: 'noul', instructions: 'Will they leave?\nYes: Threatens to cancel\nNo: No signal' })
-  assert.throws(() => parseQuestions({ odd: { type: 'boolean', instructions: 'Is it?' } }), /question "odd" needs type choice, noul, score, box or span, a preset or a signal/)
+  // another name for a type is that type; a name that is none says which are
+  assert.deepEqual(parseQuestions({ odd: { type: 'boolean', instructions: 'Is it?' } }), { odd: { type: 'noul', instructions: 'Is it?' } })
+  assert.throws(() => parseQuestions({ odd: { type: 'feeling', instructions: 'Is it?' } }), /question "odd": type "feeling" is none of choice, noul, score, box or span/)
+})
+
+test('a System One tool call that failed is told apart by why: System One unavailable, stopped, or its arguments', () => {
+  const said = {
+    'System One is unavailable: it could not be reached (Decision API unreachable: connect ETIMEDOUT). Go on without it.': 'service',
+    'Decision API unreachable: socket hang up': 'service',
+    'Decision API 503': 'service',
+    'Decision API 429 quota_exceeded': 'service',
+    'Decision API 401 missing_api_key': 'service',
+    'no System One key: set DECISION_API_KEY, or get a free System Duo key at https://app.vllm-sr.ai': 'service',
+    'tool call aborted': 'stopped',
+    'the user rejected tool "system_one"': 'stopped',
+    'question "labels": a span question names all its labels in criteria': 'arguments',
+    'question "threshold" must be an object': 'arguments',
+    'Decision API 400 invalid_request: questions.x.criteria must be an object': 'arguments',
+    'ENOENT: no such file or directory, open \'/w/metrics/charts/chart_01.png\'': 'arguments',
+    'invalid arguments: missing required property "image"': 'arguments',
+  }
+  for (const [message, failure] of Object.entries(said)) {
+    assert.equal(failureOf(message), failure, message)
+    assert.equal(failureOf(`Error: ${message}`), failure, message)
+  }
 })
 
 test('a key the start created is told under the request, and Chat gets it as a record before the triage', async t => {

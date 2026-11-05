@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.11 (2026-11-05)
+
+- **System Two's System One calls work on the first try more often.** Over every `system_one` and
+  `system_one_screen` call of the demo recordings, 14 of 94 `system_one` calls and 4 of 154 screen calls ended in an
+  argument error. The rubric is now read in the shapes System Two writes when they can mean one thing only, and the
+  summary's **Notes** line says how each was read: a span question's labels written beside its instructions (the
+  pinned "Custom labels" session's first red row), a `threshold`, `type` or `instructions` written beside the
+  questions, one question written in place of the object of questions (its second red row) or wrapped in its type, a
+  question id written twice, a list of questions, JSON cut short of its last brackets, the next arguments run into
+  `questions` by the model's tool-call markup, other names for a type, a preset or a signal, options, levels and labels
+  in other shapes, a threshold as text or a percentage, a `text_field` of several fields. `redact` without a pii or
+  span question replaces personal data; a copy that cannot be made (halu and evidence) is left out and the questions
+  are answered; one path given as both `output` and `redact` is the copy's; `annotate` without a box question draws
+  nothing and answers; `annotate: true` draws a copy beside each image; a span question of images or a box question
+  of text is left out when other questions remain, and so is an image that does not exist; `attack` or `p_harm` asked
+  beside `r_harm` reads each record's `user` part. `system_one_screen` reads `targets`, `checks` and `expected`, a
+  question or a check written as its words alone, and a box question written as a check, and its `annotate` without
+  an image extension names a folder (a file named `metrics/annotated` had made the next batch's `annotate` fail).
+  Replayed offline through the tools' own code, the recordings' first tries go from 30 of 37 taken to 35 of 37; in a
+  live test of six demo scenarios through `vllm-sr/auto`, first tries went from 15 of 22 to 26 of 28.
+- **The tool descriptions show one example of each kind of question**, say where each field goes, and the parameters
+  carry examples and their types (`redact` and `annotate`: true or a path).
+- **What still fails says how to fix it**: a span question without labels shows the shape it takes, a path that does
+  not exist names what its folder holds, a screen call that asks nothing says what it may ask, and the Decision API's
+  reason for refusing a request is passed on.
+- **Chat shows no red System One rows.** A call whose arguments System Two got wrong leaves no row, in the recorded
+  sessions too: System Two reads the error and calls again, and only the call that works is shown. A call that found
+  System One unavailable after its retries is one calm **Unavailable** line, with the details one click away, and
+  System Two is told to go on without it; a stopped call says **Stopped**. Records name how a call failed
+  (`failure`).
+
 ## 0.6.10 (2026-11-05)
 
 - **The results never take the place of the input or of the redacted copy.** Marking the demo's 230 tickets, System

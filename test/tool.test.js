@@ -4,14 +4,14 @@ import http from 'node:http'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { registerHooks } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { createDecisionClient } from '../src/client.js'
 import { loadItems } from '../src/items.js'
 import { RED, decodePng, encodePng } from '../src/png.js'
 import { ROUTER_SIGNALS } from '../src/questions.js'
 import { redactItem, writeRedacted } from '../src/redact.js'
-import { parseQuestions, planQuestions } from '../src/rubric.js'
+import { parseQuestions, planQuestions, readQuestions, splitArguments } from '../src/rubric.js'
 
 // tool.js imports the harness's defineTool, which DeepSeek Harness provides at run time
 registerHooks({
@@ -239,8 +239,12 @@ test('the results and the redacted copy never take the place of the input or of 
   const errors = { errors: { type: 'span', criteria: ['ERROR'] } }
   await assert.rejects(run({ questions: errors, file: 'notes.txt', output: 'notes.txt' }), /give it a path other than the input file/)
   await assert.rejects(run({ questions: errors, file: 'notes.txt', redact: 'notes.txt' }), /give it a path other than the input file/)
-  await assert.rejects(run({ questions: errors, file: 'notes.txt', output: 'marked.jsonl', redact: 'marked.jsonl' }), /give it a path other than output/)
+  await assert.rejects(run({ questions: errors, file: 'notes.txt', output: 'notes.s1.jsonl', redact: 'notes.s1.jsonl' }), /give it a path other than output/)
   assert.equal(asked.length, 0, 'refused before System One is asked')
+  // one path named for both, as System Two wrote it in a live run: the copy takes it, the results their default
+  const shared = await run({ questions: errors, file: 'notes.txt', output: 'marked.txt', redact: 'marked.txt' })
+  assert.deepEqual([basename(shared.output), basename(shared.redacted.output)], ['notes.s1.jsonl', 'marked.txt'])
+  assert.deepEqual(shared.notes, ['output and redact named one file: the redacted copy is written there, the results to notes.s1.jsonl'])
 })
 
 test('redact masks custom labels when no pii question is asked, writes inline items to a text file, and never overwrites its input', async t => {
@@ -255,7 +259,25 @@ test('redact masks custom labels when no pii question is asked, writes inline it
   assert.equal(inline.redacted.output, join(workspace, 'system-one-redacted.txt'))
 
   await assert.rejects(run({ questions: { errors: { type: 'span', criteria: ['ERROR'] } }, file: 'notes.txt', redact: 'notes.txt' }), /redact writes a copy/)
-  await assert.rejects(run({ questions: { angry: { type: 'noul', instructions: 'Angry?' } }, file: 'notes.txt', redact: true }), /redact replaces what span questions mark/)
+})
+
+test('redact without a span question replaces personal data, and a call whose copy cannot be made is answered without it', async t => {
+  const { workspace, run, rendered } = await setup(t, {
+    'calls.jsonl': `${JSON.stringify({ id: 'C-1', transcript: 'I am Dana Ruiz, write to dana.ruiz@northwind.example!' })}\n`,
+    'CHANGELOG.md': '- 2.4: exports use Parquet\n',
+    'draft.md': 'Exports use Parquet.\nEvery plan gets SSO.\n',
+  })
+  // as System Two asked it in a recording: a yes/no question and a copy, and nothing that says what to replace
+  const copied = await run({ questions: { has_pii: { type: 'noul', instructions: 'Does this transcript hold personal data?' } }, file: 'calls.jsonl', redact: true })
+  assert.deepEqual(Object.keys(copied.summary), ['has_pii', 'pii'])
+  assert.equal(await readFile(join(workspace, 'calls.redacted.jsonl'), 'utf8'), `${JSON.stringify({ id: 'C-1', transcript: 'I am [PERSON], write to [EMAIL_ADDRESS]!' })}\n`)
+  assert.match(rendered(copied), /Notes: redact: no pii or span question said what to replace, so pii \(\{"preset": "pii"\}\) marks the personal data it replaces\./)
+
+  // halu marks words against sources, not words to replace: the halu answers come back, the copy is left out
+  const checked = await run({ questions: { unsupported: { preset: 'halu' } }, file: 'draft.md', sources: ['CHANGELOG.md'], redact: 'draft.marked.md' })
+  assert.equal(checked.redacted, undefined)
+  assert.equal(checked.summary.unsupported.preset, 'halu')
+  assert.deepEqual(checked.notes, ['no redacted copy: halu, evidence, sources and state_fields mark words against sources, not words to replace'])
 })
 
 test('grounded checks: halu marks the words of each claim its sources do not support, evidence the lines that back it', async t => {
@@ -369,7 +391,13 @@ test('router signals go to the span model under their trained names, beside the 
   assert.deepEqual(asked[0].state, { user: replies[0].user, answer: replies[0].answer })
   assert.deepEqual((await readRows(own.output)).map(row => row.answers.harm.choice), ['unsafe response', 'safe response'])
   await assert.rejects(run({ questions: { harm: { signal: 'r_harm' } }, items: ['Is this safe?'] }), /signal r_harm reads user and answer/)
-  await assert.rejects(run({ questions: { jailbreak: { signal: 'attack' } }, file: 'replies.jsonl', state_fields: { user: 'user', answer: 'answer' } }), /signal attack reads one text/)
+  // a signal that reads one text, asked beside the reply signals, reads each record's request, as System Two asked it
+  // in a live run
+  asked.length = 0
+  const both = await run({ questions: { jailbreak: { signal: 'attack' }, harm: { signal: 'r_harm' } }, file: 'replies.jsonl', state_fields: { user: 'user', answer: 'answer' } })
+  assert.deepEqual(asked.map(body => [Object.keys(body.questions), body.state]).sort((a, b) => a[0][0].localeCompare(b[0][0])), [[['attack'], replies[0].user], [['r_harm'], { user: replies[0].user, answer: replies[0].answer }]])
+  assert.deepEqual(Object.keys(both.summary), ['jailbreak', 'harm'])
+  await assert.rejects(run({ questions: { jailbreak: { signal: 'attack' } }, file: 'replies.jsonl', state_fields: { context: 'user', answer: 'answer' } }), /signal attack reads one text: ask it in a call without sources and state_fields, or name the request it reads as the "user" part of state_fields/)
   await assert.rejects(run({ questions: { odd: { signal: 'nope' } }, items: ['x'] }), /signal must be one of attack, p_harm/)
   await assert.rejects(run({ questions: { a: { signal: 'attack' }, b: { signal: 'attack' } }, items: ['x'] }), /signal attack is asked twice/)
 })
@@ -430,12 +458,26 @@ test('box questions over images: annotated PNG copies with the boxes found, and 
   assert.deepEqual(decodePng(await readFile(join(workspace, 'screens/a.png'))).data, noise.data)
 
   await assert.rejects(run({ questions: { personal: { preset: 'pii' } }, images: ['screens/a.png'] }), /read text, not images/)
-  // a call that cannot annotate is refused before System One is asked anything
-  asked.length = 0
-  await assert.rejects(run({ questions: { broken: { type: 'noul', instructions: 'Broken?' } }, images: ['screens/a.png'], annotate: 'out' }),
-    /annotate draws the boxes that box questions find on images: add one to questions, as \{"where": \{"type": "box"/)
-  assert.equal(asked.length, 0)
+  // a call that cannot annotate answers its questions and says why nothing was drawn
+  const unboxed = await run({ questions: { broken: { type: 'noul', instructions: 'Broken?' } }, images: ['screens/a.png'], annotate: 'out' })
+  assert.equal(unboxed.annotated, undefined)
+  assert.match(rendered(unboxed), /Notes: nothing annotated: annotate draws the boxes that box questions find on images; add one, as \{"where": \{"type": "box"/)
   await assert.rejects(run({ questions: { problem: { type: 'box', instructions: 'The error' } }, items: ['text'] }), /a box question needs images/)
+  // a question images cannot answer is left out when others remain
+  const mixedKinds = await run({ questions: { summary: { type: 'span', criteria: ['ERROR'] }, broken: { type: 'noul', instructions: 'Broken?' } }, images: ['screens/a.png'] })
+  assert.deepEqual([Object.keys(mixedKinds.summary), mixedKinds.notes], [['broken'], ['not asked: summary (span questions, presets and signals read text, not images)']])
+  // true draws a copy beside each image; a folder named by a file is refused before System One is asked anything
+  const besideEach = await run({ questions: { problem: { type: 'box', instructions: 'The error message' } }, images: ['screens/a.png'], annotate: true })
+  assert.deepEqual(besideEach.annotated.files, ['screens/a.annotated.png'])
+  asked.length = 0
+  await assert.rejects(run({ questions: { problem: { type: 'box', instructions: 'The error message' } }, images: ['screens/a.png', 'screens/b.png'], annotate: 'screens/a.png' }),
+    /annotate names a folder for the annotated copies, and screens\/a\.png is a file: name a folder, as "metrics\/annotated\/", or pass true/)
+  assert.equal(asked.length, 0)
+  // an image that is not there is left out and said; a call with none of its images is refused with what the folder holds
+  const some = await run({ questions: { broken: { type: 'noul', instructions: 'Broken?' } }, images: ['screens/a.png', 'screens/chart_01.png'] })
+  assert.deepEqual([some.items, some.notes], [1, ['left out 1 image(s) that do not exist: screens/chart_01.png']])
+  await assert.rejects(run({ questions: { broken: { type: 'noul', instructions: 'Broken?' } }, images: ['screens/chart_01.png'] }),
+    /^Error: image screens\/chart_01\.png does not exist; screens\/ holds a\.annotated\.png, a\.png, b\.png$/)
   // images from more than one folder keep the workspace's default name
   await mkdir(join(workspace, 'other'), { recursive: true })
   await writeFile(join(workspace, 'other/d.png'), encodePng(noise))
@@ -480,7 +522,7 @@ test('questions: presets, signals and span questions are checked, and ids that n
   assert.throws(() => parseQuestions({ x: { preset: 'secrets' } }), /preset must be pii, halu, evidence/)
   assert.throws(() => parseQuestions({ x: { preset: 'halu', labels: ['PERSON'] } }), /labels \(a list, or "all"\) picks the labels of preset pii/)
   assert.deepEqual(parseQuestions({ x: { preset: 'pii', labels: 'all' } }), { x: { preset: 'pii', labels: 'all' } })
-  assert.throws(() => parseQuestions({ x: { type: 'span', instructions: 'Mark things.' } }), /a span question needs criteria naming its labels/)
+  assert.throws(() => parseQuestions({ x: { type: 'span', instructions: 'Mark things.' } }), /question "x": a span question names all its labels in criteria, each with what it marks, as \{"type": "span", "criteria": \{"ERROR": /)
   assert.throws(() => parseQuestions({ x: { preset: 'pii', threshold: 1.5 } }), /threshold must be a number between 0 and 1/)
 
   const plan = planQuestions(parseQuestions({
@@ -510,7 +552,7 @@ test('a label set written as a choice is asked as a span question, and a type be
 
   // a threshold written beside its question
   assert.deepEqual(parseQuestions({ marks: { type: 'span', criteria: ['ERROR'] }, marks_threshold: 0.4 }), { marks: { type: 'span', criteria: ['ERROR'], threshold: 0.4 } })
-  assert.throws(() => parseQuestions({ marks: { type: 'span', criteria: ['ERROR'] }, other_threshold: 0.4 }), /question "other_threshold" must be an object/)
+  assert.throws(() => parseQuestions({ marks: { type: 'span', criteria: ['ERROR'] }, other_threshold: 0.4 }), /questions: "other_threshold" is 0\.4, not a question\. Each entry of questions is a question object under its own id/)
 
   const typed = parseQuestions({ type: 'span', ERROR: { criteria: { ERROR: 'an error code' } }, team: { type: 'choice', instructions: 'Team?', criteria: { a: 'A', b: 'B' } } })
   assert.deepEqual([typed.ERROR.type, typed.team.type, typed.type], ['span', 'choice', undefined])
@@ -518,6 +560,122 @@ test('a label set written as a choice is asked as a span question, and a type be
 
   // a choice without options, as System Two wrote one in a live run, is refused before any request
   assert.throws(() => parseQuestions({ page: { type: 'choice', instructions: 'Which page is this? Answer with the page name.' } }), /question "page": a choice question needs criteria naming two or more options/)
+})
+
+test('the rubrics System Two wrote in the demo recordings are read as they mean, and what was read another way is said', () => {
+  // the three mistakes of the 0.6.x recordings, word for word but shortened
+  const beside = readQuestions(JSON.stringify({
+    labels: { type: 'span', instructions: 'Mark with these labels the words in each support ticket.', COMPETITOR: 'names of competing products', FEATURE_REQUEST: 'features the customer asks for' },
+    threshold: 0.5,
+  }))
+  assert.deepEqual(beside.questions, { labels: { type: 'span', criteria: { COMPETITOR: 'names of competing products', FEATURE_REQUEST: 'features the customer asks for' }, instructions: 'Mark with these labels the words in each support ticket.', threshold: 0.5 } })
+  assert.deepEqual(beside.notes, ['labels: labels COMPETITOR, FEATURE_REQUEST read as its criteria', 'labels: the threshold beside the questions, 0.5, read as its threshold'])
+
+  const alone = readQuestions('{"threshold": 0.5, "type": "span", "criteria": {"ERROR": "error codes the customer quotes", "COMPETITOR": "competing products"}}')
+  assert.deepEqual(alone.questions, { labels: { type: 'span', criteria: { ERROR: 'error codes the customer quotes', COMPETITOR: 'competing products' }, threshold: 0.5 } })
+  assert.deepEqual(alone.notes, ['questions held one question, not an object of questions: read as {"labels": {...}}'])
+
+  const twice = readQuestions('{"marks": {"criteria": {"ERROR": "an error code"}, "instructions": "Mark the exact words."}, "marks": {"type": "span"}}')
+  assert.deepEqual(twice.questions, { marks: { type: 'span', criteria: { ERROR: 'an error code' }, instructions: 'Mark the exact words.' } })
+  assert.deepEqual(twice.notes, ['"marks" was written twice: its two parts were read as one'])
+  // two different questions under one id are both asked
+  const clash = readQuestions('{"kind": {"instructions": "What kind of problem?", "criteria": {"blank": "a blank page", "error": "an error message"}}, "kind": {"type": "box", "instructions": "the problem"}}')
+  assert.deepEqual(Object.entries(clash.questions).map(([id, question]) => [id, question.type]), [['kind', 'choice'], ['kind_2', 'box']])
+  assert.deepEqual(clash.notes, ['"kind" was written twice as two questions: the second is asked as "kind_2"'])
+
+  // other names for a type, a preset or a signal, and for criteria
+  const named = readQuestions({
+    angry: { type: 'yes_no', question: 'Is the customer angry?' },
+    team: { type: 'classification', instructions: 'Which team?', options: ['billing', 'engineering'] },
+    urgency: { type: 'rating', instructions: 'How urgent?', levels: { 1: 'can wait', 2: 'today' } },
+    words: { type: 'spans', labels: ['ERROR', 'COMPETITOR'] },
+    personal: { type: 'personal_data' },
+    hallucinated: { preset: 'hallucination' },
+    jailbreak: { signal: 'jailbreak' },
+    harm: { type: 'signal', name: 'p_harm' },
+    rival: { ERROR: 'an error code', COMPETITOR: 'another product' },
+    mood: { instructions: 'What mood?', choices: { calm: 'calm', upset: 'upset' } },
+  })
+  assert.deepEqual(named.questions, {
+    angry: { type: 'noul', instructions: 'Is the customer angry?' },
+    team: { type: 'choice', instructions: 'Which team?', criteria: ['billing', 'engineering'] },
+    urgency: { type: 'score', instructions: 'How urgent?', criteria: ['1: can wait', '2: today'] },
+    words: { type: 'span', criteria: ['ERROR', 'COMPETITOR'] },
+    personal: { preset: 'pii' },
+    hallucinated: { preset: 'halu' },
+    jailbreak: { signal: 'attack' },
+    harm: { signal: 'p_harm' },
+    rival: { type: 'span', criteria: { ERROR: 'an error code', COMPETITOR: 'another product' } },
+    mood: { type: 'choice', instructions: 'What mood?', criteria: { calm: 'calm', upset: 'upset' } },
+  })
+  assert.ok(named.notes.includes('angry: type "yes_no" read as noul') && named.notes.includes('jailbreak: signal "jailbreak" read as attack'), named.notes.join('; '))
+
+  // criteria in other shapes, thresholds as text or percentages, a question as its words, labels alone
+  const shaped = readQuestions({
+    a: { type: 'span', criteria: 'ERROR: an error code; COMPETITOR: another product', threshold: '0.4' },
+    b: { type: 'span', criteria: [{ label: 'ERROR', description: 'an error code' }], threshold: 60 },
+    c: { type: 'choice', instructions: 'Which plan?', criteria: 'free, pro, enterprise' },
+    d: { type: 'score', instructions: 'How clear?', criteria: '1 = vague\n2 = clear' },
+    e: 'Does the ticket mention a refund?',
+    f: ['ERROR', 'LIMIT'],
+    g: { preset: 'pii', threshold: { min: 0.7 } },
+  })
+  assert.deepEqual(shaped.questions, {
+    a: { type: 'span', criteria: { ERROR: 'an error code', COMPETITOR: 'another product' }, threshold: 0.4 },
+    b: { type: 'span', criteria: { ERROR: 'an error code' }, threshold: 0.6 },
+    c: { type: 'choice', instructions: 'Which plan?', criteria: { free: 'free', pro: 'pro', enterprise: 'enterprise' } },
+    d: { type: 'score', instructions: 'How clear?', criteria: ['1 = vague', '2 = clear'] },
+    e: { type: 'noul', instructions: 'Does the ticket mention a refund?' },
+    f: { type: 'span', criteria: ['ERROR', 'LIMIT'] },
+    g: { preset: 'pii', threshold: 0.7 },
+  })
+
+  // a question wrapped in its type, as System Two wrote one in a live run
+  const wrapped = readQuestions({ where: { box: { type: 'box', instructions: 'the anomaly in the plotted line' } }, kind: { choice: { instructions: 'Which kind?', criteria: { spike: 'a spike', drop: 'a drop' } } } })
+  assert.deepEqual(wrapped.questions, { where: { type: 'box', instructions: 'the anomaly in the plotted line' }, kind: { type: 'choice', instructions: 'Which kind?', criteria: { spike: 'a spike', drop: 'a drop' } } })
+  assert.deepEqual(readQuestions({ team: { criteria: { billing: 'payments', sales: 'plans' }, instructions: 'Team?' } }).notes, [], 'a question of one field is no wrapper')
+
+  // a list of questions, the instructions beside the questions, and the object written as JSON twice over
+  assert.deepEqual(readQuestions([{ id: 'angry', type: 'noul', instructions: 'Angry?' }, { preset: 'pii' }]).questions, { angry: { type: 'noul', instructions: 'Angry?' }, pii: { preset: 'pii' } })
+  assert.deepEqual(readQuestions({ instructions: 'Is the customer angry?', angry: { type: 'noul' } }).questions, { angry: { type: 'noul', instructions: 'Is the customer angry?' } })
+  assert.deepEqual(readQuestions(JSON.stringify(JSON.stringify({ angry: { type: 'noul', instructions: 'Angry?' } }))).questions, { angry: { type: 'noul', instructions: 'Angry?' } })
+
+  // what cannot be read says how to write it
+  // JSON cut short of its last brackets, or with one too many, as System Two wrote it in live runs
+  const cut = readQuestions('{"angry": {"type": "noul", "instructions": "Angry?"}, "where": {"type": "box", "instructions": "the error"}')
+  assert.deepEqual([Object.keys(cut.questions), cut.notes], [['angry', 'where'], ['questions was not quite JSON: it ended before its last bracket, which were closed']])
+  assert.deepEqual(readQuestions('{"angry": {"type": "noul", "instructions": "Angry?"}}}').notes, ['questions was not quite JSON: the brackets after its end were dropped'])
+  assert.throws(() => readQuestions('{"angry": {"type": "noul" "instructions": "Angry?"}}'), /^Error: questions is not valid JSON \(.+\): write an object of question id -> question, as \{"team": /)
+  assert.throws(() => readQuestions('{"angry": {"type": "noul", "instructions": "Angry'), /questions is not valid JSON/)
+  // the model's tool-call markup inside the questions: what follows it is the next arguments
+  assert.deepEqual(splitArguments('{"q": {"type": "noul", "instructions": "Broken?"}}, images</arg_key><arg_value>["a.png", "b.png"]'), { head: '{"q": {"type": "noul", "instructions": "Broken?"}}', leaked: { images: ['a.png', 'b.png'] } })
+  assert.throws(() => readQuestions({ odd: { type: 'sentiment', instructions: 'Is it?' } }), /question "odd": type "sentiment" is none of choice, noul, score, box or span; or ask a preset, as \{"preset": "pii"\}, or a router signal, as \{"signal": "attack"\}/)
+  assert.throws(() => readQuestions({ x: { type: 'span', criteria: ['ERROR'], threshold: 1 } }), /question "x": threshold must be a number between 0 and 1, as "threshold": 0\.5/)
+})
+
+test('a path that is not there names what its folder holds, and a text field may be several or another case', async t => {
+  const { asked, run, rendered } = await setup(t, { 'support/tickets.jsonl': '{"id":"T-1","Subject":"Export fails","body":"HTTP 504 on export"}\n', 'support/triage.csv': 'id,team\n' })
+  await assert.rejects(run({ questions: { angry: { type: 'noul', instructions: 'Angry?' } }, file: 'support/ticket.jsonl' }), /^Error: file support\/ticket\.jsonl does not exist; support\/ holds tickets\.jsonl$/)
+  await assert.rejects(run({ questions: { angry: { type: 'noul', instructions: 'Angry?' } }, file: 'support' }), /^Error: file support is a folder, not a file; support\/ holds tickets\.jsonl, triage\.csv$/)
+  await assert.rejects(run({ questions: { unsupported: { preset: 'halu' } }, file: 'support/tickets.jsonl', sources: ['docs/policy.md'] }), /^Error: source docs\/policy\.md does not exist; the working directory holds support\/$/)
+  assert.equal(asked.length, 0, 'refused before System One is asked')
+
+  const value = await run({ questions: { marks: { type: 'span', criteria: ['ERROR'] } }, file: 'support/tickets.jsonl', text_field: 'subject, body' })
+  assert.deepEqual(asked[0].state, 'Subject: Export fails\nbody: HTTP 504 on export')
+  assert.match(rendered(value), /- marks: ERROR 1 in 1 of 1 item\(s\)/)
+  // results written into a folder take their default name there
+  const into = await run({ questions: { marks: { type: 'span', criteria: ['ERROR'] } }, file: 'support/tickets.jsonl', output: 'support/' })
+  assert.match(into.output, /support\/tickets\.s1\.jsonl$/)
+})
+
+test('System One unavailable after its retries says so, and that System Two goes on without it', async t => {
+  const { run } = await setup(t)
+  delete process.env.S1_TOOL_KEY
+  t.after(() => {
+    process.env.S1_TOOL_KEY = 'sk-vsr-test'
+  })
+  await assert.rejects(run({ questions: { angry: { type: 'noul', instructions: 'Angry?' } }, items: ['fine'] }),
+    /^Error: System One is unavailable: it has no valid key \(no System One key: set S1_TOOL_KEY, or get a free System Duo key at https:\/\/app\.vllm-sr\.ai\)\. Go on without it: do this step another way, or tell the user\.$/)
 })
 
 test('grounded items share requests only as far as the token estimate allows, and an item too heavy to read is refused', async t => {

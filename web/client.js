@@ -65,6 +65,22 @@ window.__ModuleLoader__.load({
         unsupported: { label: 'Sent back to re-verify', tone: 'warn' },
       }
 
+      // How a system_one or system_one_screen call that ended in an error ended (src/records.js failureOf, the same
+      // patterns): System One unavailable after its retries, the call stopped, or else its arguments, which System Two
+      // reads in the error and corrects. Records from before 0.6.11 carry only the error's text.
+      const SERVICE = /^(?:Error:\s*)?(?:System One is unavailable\b|Decision API (?:unreachable\b|5\d\d\b|429\b|401\b|403\b)|no System One key\b)/
+      const STOPPED = /\btool call aborted\b|\baborted before dispatch\b|\bthe user rejected tool\b|\bapproval for tool\b.*\bwas cancelled\b|\bno approval channel\b/
+      const failureOf = message => (SERVICE.test(String(message ?? '').trim()) ? 'service' : STOPPED.test(String(message ?? '')) ? 'stopped' : 'arguments')
+      // what an unavailable System One says, in a few calm words
+      function unavailableWhy(message) {
+        const said = String(message ?? '')
+        if (/quota_exceeded|daily quota/.test(said)) return 'the key\'s daily quota is spent'
+        if (/\b429\b|it is busy/.test(said)) return 'System One is busy right now'
+        if (/\b401\b|no System One key|no valid key/.test(said)) return 'System One has no valid key'
+        if (/\b403\b|may not use/.test(said)) return 'the key may not use this model'
+        return 'System One could not be reached'
+      }
+
       const num = value => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
       const p2 = value => (num(value) === undefined ? '?' : value.toFixed(2))
       // under a second in milliseconds (182 ms), from a second up in seconds (1.4 s)
@@ -185,6 +201,10 @@ window.__ModuleLoader__.load({
         return { ...base, rows: [...base.rows, row] }
       }
 
+      // a system_one or system_one_screen call whose every record says its arguments were wrong
+      const retried = state => (state.reflex === 'tool' || state.reflex === 'screen')
+        && state.rows.every(row => row.error !== undefined && (row.failure ?? failureOf(row.error)) === 'arguments')
+
       // Triage and done-check frame the turn, and so does a guard or shield decision that stopped something: those are
       // cards. A routine one is one line.
       function standsOut(state) {
@@ -219,7 +239,8 @@ window.__ModuleLoader__.load({
             target: 'chat',
             anchorSeq: first?.event?.seq ?? state.rows[0].seq,
             location: first?.location ?? { kind: 'unresolved' },
-            visibility: 'visible',
+            // a call that ended in an argument error leaves no row: System Two read the error, and its retry shows
+            visibility: retried(state) ? 'hidden' : 'visible',
             // outside the groups a finished turn folds its work into ("Ran commands", "Completed in"): System One
             // never folds away with it
             groupTree: 'turn',
@@ -754,7 +775,7 @@ window.__ModuleLoader__.load({
       function CallLine({ state, cwd, openFile, sessionId }) {
         const row = state.rows[state.rows.length - 1]
         const meta = row.meta && typeof row.meta === 'object' ? { ...row.meta, ui: 'compact' } : undefined
-        const block = { time: row.time, isError: Boolean(row.error), content: row.error ? [{ type: 'text', text: `Error: ${text(row.error)}` }] : [], meta, call: { argsRaw: '{}' } }
+        const block = { time: row.time, isError: row.error !== undefined, failure: row.failure, content: row.error !== undefined ? [{ type: 'text', text: `Error: ${text(row.error)}` }] : [], meta, call: { argsRaw: '{}' } }
         return h(state.reflex === 'screen' ? ScreenRow : ToolRow, { block, phase: 'result', callId: row.callId, cwd, openFile, sessionId: sessionId ?? row.session })
       }
 
@@ -764,6 +785,7 @@ window.__ModuleLoader__.load({
         const state = props?.node?.data
         if (!state || !Array.isArray(state.rows) || state.rows.length === 0) return null
         if (state.reflex === 'key') return h(Contained, null, h(KeyNotice, { state }))
+        if (retried(state)) return null
         if (state.reflex === 'tool' || state.reflex === 'screen') return turnOpen(props.node) ? null : h(Contained, null, h(CallLine, { ...props, state }))
         const slim = state.ui === 'compact' || !standsOut(state)
         return h(Contained, null, h(slim ? Compact : Card, { state }))
@@ -967,20 +989,48 @@ window.__ModuleLoader__.load({
             })))
       }
 
-      // a call that failed, or whose result carries no facts to draw: its first line, and the rest on demand
-      function Plain({ block, common, what }) {
+      // A call that ended in an error. One whose arguments System Two got wrong draws nothing: it reads the error and
+      // calls again, and the call that works is the one Chat shows. One that found System One unavailable, after its
+      // retries, or that was stopped, is one calm line; System Two goes on without it.
+      function Failed({ block, common, reflex, inspect }) {
+        const body = resultText(block).replace(/^Error:\s*/, '')
+        const failure = block?.failure ?? failureOf(body)
         const [open, setOpen] = React.useState(false)
-        const body = resultText(block)
-        const first = body.split('\n')[0] || (block?.isError ? `The ${what} failed` : 'Done')
+        if (failure === 'arguments') return h('span', { hidden: true, ...common, 'data-system-one-verdict': 'retried', 'data-system-one-hidden': 'arguments' })
+        const stopped = failure === 'stopped'
+        const said = stopped ? 'Stopped' : 'Unavailable'
+        const why = stopped ? 'the call did not run to its end' : `${unavailableWhy(body)}; System Two goes on without it`
         return h('div', {
-          className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--plain', block?.isError && 'vsr-s1--bad', open && 'vsr-s1--open'),
-          ...common, 'data-system-one-verdict': block?.isError ? 'error' : 'done', 'data-system-one-tone': block?.isError ? 'bad' : 'muted',
+          className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--muted', open && 'vsr-s1--open'),
+          ...common, 'data-system-one-verdict': stopped ? 'cancelled' : 'unavailable', 'data-system-one-tone': 'muted',
         },
         h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
           h(Lead, { toggles: true }),
           ...joined([
             nameOf(true),
-            h('span', { className: cx('vsr-s1__summary', block?.isError && 'vsr-s1__summary--bad'), 'data-system-one-part': 'summary', title: first }, first),
+            reflexOf(true, reflex),
+            h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: why },
+              ...joined([h('span', { className: 'vsr-s1__verdict vsr-s1__verdict--muted', 'data-system-one-part': 'verdict' }, said), why])),
+          ])),
+        open ? h('div', { className: 'vsr-s1__rows', 'data-system-one-part': 'rows' },
+          h('pre', { className: 'vsr-s1__raw', 'data-system-one-part': 'raw' }, body),
+          typeof inspect === 'function' ? h('button', { type: 'button', className: 'vsr-s1__more', 'data-system-one-part': 'inspect', onClick: () => inspect() }, 'Inspect the call') : null) : null)
+      }
+
+      // a call whose result carries no facts to draw: its first line, and the rest on demand
+      function Plain({ block, common, what }) {
+        const [open, setOpen] = React.useState(false)
+        const body = resultText(block)
+        const first = body.split('\n')[0] || `The ${what} is done`
+        return h('div', {
+          className: cx('vsr-s1', 'vsr-s1--compact', 'vsr-s1--plain', open && 'vsr-s1--open'),
+          ...common, 'data-system-one-verdict': 'done', 'data-system-one-tone': 'muted',
+        },
+        h('button', { type: 'button', className: 'vsr-s1__chip', 'data-system-one-part': 'toggle', 'aria-expanded': open, onClick: () => setOpen(!open) },
+          h(Lead, { toggles: true }),
+          ...joined([
+            nameOf(true),
+            h('span', { className: 'vsr-s1__summary', 'data-system-one-part': 'summary', title: first }, first),
           ])),
         open ? h('pre', { className: 'vsr-s1__raw', 'data-system-one-part': 'raw' }, body) : null)
       }
@@ -1031,7 +1081,7 @@ window.__ModuleLoader__.load({
       }
 
       function ToolRow(props) {
-        const { block, phase, callId, cwd, openFile, sessionId } = props
+        const { block, phase, callId, cwd, openFile, sessionId, inspect } = props
         const args = parseArgs(phase === 'result' ? block?.call?.argsRaw : block?.argsRaw)
         const meta = phase === 'result' && block?.meta && block.meta.systemOne === 1 ? block.meta : undefined
         const ui = meta?.ui ?? 'card'
@@ -1044,7 +1094,8 @@ window.__ModuleLoader__.load({
           const line = phase === 'preparing' ? 'Preparing a batch' : `Answering ${plural(asked, 'question')}${source ? ` over ${source}` : ''}`
           return h(Running, { reflex: REFLEX.tool, line, common })
         }
-        if (block?.isError || !meta || ui === 'off') return h(Plain, { block, common, what: 'batch' })
+        if (block?.isError) return h(Failed, { block, common, reflex: REFLEX.tool, inspect })
+        if (!meta || ui === 'off') return h(Plain, { block, common, what: 'batch' })
 
         const headline = [plural(num(meta.items) ?? 0, 'item'), plural(num(meta.questions) ?? 0, 'question'), plural(num(meta.requests) ?? 0, 'request')].join(' · ')
         // one line says what the batch found; a card shows it below its head
@@ -1142,7 +1193,7 @@ window.__ModuleLoader__.load({
       }
 
       function ScreenRow(props) {
-        const { block, phase, callId, cwd, openFile, sessionId } = props
+        const { block, phase, callId, cwd, openFile, sessionId, inspect } = props
         const args = parseArgs(phase === 'result' ? block?.call?.argsRaw : block?.argsRaw)
         const meta = phase === 'result' && block?.meta && block.meta.systemOneScreen === 1 ? block.meta : undefined
         const ui = meta?.ui ?? 'card'
@@ -1154,7 +1205,8 @@ window.__ModuleLoader__.load({
           const line = phase === 'preparing' ? 'Getting ready to look' : `Looking at ${image || 'the screen'}${text(args.action) ? ` after “${clipText(args.action, 60)}”` : ''}`
           return h(Running, { reflex: REFLEX.screen, line, common })
         }
-        if (block?.isError || !meta || ui === 'off') return h(Plain, { block, common, what: 'look' })
+        if (block?.isError) return h(Failed, { block, common, reflex: REFLEX.screen, inspect })
+        if (!meta || ui === 'off') return h(Plain, { block, common, what: 'look' })
 
         const view = screenView(meta)
         const done = {
@@ -1349,6 +1401,7 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1--fresh .vsr-s1__thumbcell{animation:vsr-s1-rise .26s var(--vsr-s1-ease) both;animation-delay:calc(.08s + var(--vsr-s1-i,0) * 30ms)}
 .vsr-s1--fresh .vsr-s1__span--labels,.vsr-s1--fresh .vsr-s1__span--evidence{animation:vsr-s1-ink .5s ease-out .3s both}
 @media (prefers-reduced-motion:reduce){.vsr-s1,.vsr-s1 *,.vsr-s1 *::before,.vsr-s1 *::after{animation:none!important;transition:none!important}.vsr-s1__shim-deco{display:none}}
+[data-chat-call-id]:has(>[data-system-one-hidden]),[data-chat-call-id]:has(>[data-slot]>[data-system-one-hidden]),[data-chat-flow-kind=tool-call]:has(>[data-slot]>[data-chat-call-id]>[data-slot]>[data-system-one-hidden]){display:none}
 `
       if (typeof document !== 'undefined') {
         const tagId = `${PACKAGE}/system-one.css`
@@ -1398,6 +1451,7 @@ a.vsr-s1__link{text-decoration:none}
       exports.apply = apply
       exports.definition = definition
       exports.viewOf = viewOf
+      exports.failureOf = failureOf
       exports.SystemOneNode = SystemOneNode
       exports.SystemOneToolRow = SystemOneToolRow
       exports.SystemOneScreenRow = SystemOneScreenRow

@@ -411,9 +411,30 @@ test('the system_one row draws the batch from its result, and its progress while
   assert.deepEqual(attrs(root(running), ['', 'verdict']), { '': 'tool', verdict: 'running' })
   assert.ok(parts(running).includes('progress'), 'it shimmers while it runs')
 
-  const failed = render(exports.SystemOneToolRow({ ...props, block: { ...props.block, isError: true, meta: undefined, content: [{ type: 'text', text: 'Error: questions must be an object' }] } }))
-  assert.ok(textOf(failed).includes('Error: questions must be an object'))
-  assert.deepEqual(attrs(root(failed), ['', 'verdict', 'tone']), { '': 'tool', verdict: 'error', tone: 'bad' })
+  // a call whose arguments System Two got wrong draws nothing in Chat: it reads the error and calls again
+  const failed = render(exports.SystemOneToolRow({ ...props, block: { ...props.block, isError: true, meta: undefined, content: [{ type: 'text', text: 'Error: question "labels": a span question names all its labels in criteria' }] } }))
+  assert.equal(textOf(failed), '')
+  assert.deepEqual([root(failed).type, root(failed).props.hidden, root(failed).props['data-system-one-hidden']], ['span', true, 'arguments'])
+  assert.deepEqual(attrs(root(failed), ['', 'verdict', 'tone', 'call']), { '': 'tool', verdict: 'retried', tone: undefined, call: 'call-7' })
+
+  // one that found System One unavailable is one calm line, not a red one, with the details on demand
+  const inspected = []
+  const unreachable = { ...props, inspect: () => inspected.push('call-7'), block: { ...props.block, isError: true, meta: undefined, content: [{ type: 'text', text: 'Error: System One is unavailable: it could not be reached (Decision API unreachable: connect ETIMEDOUT). Go on without it: do this step another way, or tell the user.' }] } }
+  const calm = render(exports.SystemOneToolRow(unreachable))
+  assert.deepEqual(attrs(root(calm), ['', 'verdict', 'tone']), { '': 'tool', verdict: 'unavailable', tone: 'muted' })
+  assert.equal(spoken(calm), 'System One · Batch · Unavailable · System One could not be reached; System Two goes on without it')
+  assert.doesNotMatch(JSON.stringify(calm), /--bad/)
+  const unfolded = { ...fakeReact, useState: init => [init === false ? true : typeof init === 'function' ? init() : init, () => {}] }
+  const { exports: open } = load({ require: specifier => (specifier === 'react' ? unfolded : assert.fail(specifier)) })
+  const details = render(open.SystemOneToolRow(unreachable))
+  assert.ok(textOf(details).includes('Decision API unreachable: connect ETIMEDOUT'))
+  findAll(details, props => props['data-system-one-part'] === 'inspect')[0].props.onClick()
+  assert.deepEqual(inspected, ['call-7'])
+  // a spent quota and a stopped call say so as calmly
+  const quota = render(exports.SystemOneToolRow({ ...props, block: { ...props.block, isError: true, meta: undefined, content: [{ type: 'text', text: 'Error: Decision API 429 quota_exceeded' }] } }))
+  assert.equal(spoken(quota), 'System One · Batch · Unavailable · the key\'s daily quota is spent; System Two goes on without it')
+  const stopped = render(exports.SystemOneToolRow({ ...props, block: { ...props.block, isError: true, meta: undefined, content: [{ type: 'text', text: 'Error: tool call aborted' }] } }))
+  assert.deepEqual(attrs(root(stopped), ['verdict', 'tone']), { verdict: 'cancelled', tone: 'muted' })
 })
 
 test('a decision still deciding is one busy line, and its answer takes its place in the same element', () => {
@@ -690,8 +711,8 @@ test('the system_one_screen row shows the screenshot, where to click, what it sh
   assert.ok(parts(running).includes('progress'))
 
   const failed = render(exports.SystemOneScreenRow({ ...props, block: { ...props.block, isError: true, meta: undefined } }))
-  assert.deepEqual(attrs(rootOf(failed), ['', 'verdict', 'tone']), { '': 'screen', verdict: 'error', tone: 'bad' })
-  assert.ok(textOf(failed).includes('not a PNG, JPEG or WebP image'))
+  assert.deepEqual(attrs(rootOf(failed), ['', 'verdict', 'hidden']), { '': 'screen', verdict: 'retried', hidden: 'arguments' })
+  assert.equal(textOf(failed), '')
 
   const compact = render(exports.SystemOneScreenRow({ ...props, block: { ...props.block, meta: { ...meta, ui: 'compact' } } }))
   assert.match(rootOf(compact).props.className, /vsr-s1--compact/)
@@ -705,12 +726,18 @@ test('a system_one call keeps one line in its turn once the turn ends and folds 
     summary: { team: { type: 'choice', counts: { billing: 61, engineering: 58 }, unsure: [], unsureCount: 0, failed: 0 } } }
   const screen = { systemOneScreen: 1, ui: 'card', model: 'vllm-sr/vela3-turbo', seconds: 0.58, requests: 1, image: 'shots/03-click.png', imagePath: '/work/shots/03-click.png', size: { width: 1280, height: 800 },
     action: { text: 'click "Pay now"', before: 'shots/02-open.png', beforePath: '/work/shots/02-open.png', succeeded: 0.03 } }
-  const [tool, look, broken] = assemble(exports.definition, [
+  const [tool, look, broken, older, offline] = assemble(exports.definition, [
     record({ reflex: 'tool', callId: 'call-7', tool: 'system_one', session: 's-1', meta: batch, model: undefined, ms: undefined }),
     record({ reflex: 'screen', callId: 'call-8', tool: 'system_one_screen', session: 's-1', meta: screen, model: undefined, ms: undefined }),
-    record({ reflex: 'tool', callId: 'call-9', tool: 'system_one', session: 's-1', error: 'questions must be an object', model: undefined, ms: undefined }),
+    record({ reflex: 'tool', callId: 'call-9', tool: 'system_one', session: 's-1', error: 'question "labels": a span question names all its labels in criteria', failure: 'arguments', model: undefined, ms: undefined }),
+    // as 0.6.10 recorded the demo's pinned sessions: the error's text alone
+    record({ reflex: 'tool', callId: 'call-10', tool: 'system_one', session: 's-1', error: 'question "threshold" must be an object', model: undefined, ms: undefined }),
+    record({ reflex: 'screen', callId: 'call-11', tool: 'system_one_screen', session: 's-1', error: 'Decision API unreachable: socket hang up', model: undefined, ms: undefined }),
   ])
   assert.deepEqual([tool, look, broken].map(node => [node.id, node.groupTree]), [['c:call-7', 'turn'], ['c:call-8', 'turn'], ['c:call-9', 'turn']])
+  // a call that ended in an argument error has no row in Chat, in a recorded session too; one that found System One
+  // unavailable keeps a calm line
+  assert.deepEqual([tool, look, broken, older, offline].map(node => node.visibility), ['visible', 'visible', 'hidden', 'hidden', 'visible'])
   const at = (node, status) => ({ ...node, location: { kind: 'step', turn: { status } } })
 
   // while the turn runs, the call's own row shows its card
@@ -735,9 +762,11 @@ test('a system_one call keeps one line in its turn once the turn ends and folds 
   assert.deepEqual(attrs(rootOf(seen), ['', 'verdict', 'tone', 'action']), { '': 'screen', verdict: 'done', tone: 'bad', action: 'failed' })
   assert.equal(spoken(seen), 'System One · 580 ms · Screen · the action did not work · shots/03-click.png')
 
-  const failed = render(exports.SystemOneNode({ node: at(broken, 'closed'), cwd: '/work' }))
-  assert.deepEqual(attrs(rootOf(failed), ['', 'verdict', 'tone']), { '': 'tool', verdict: 'error', tone: 'bad' })
-  assert.equal(spoken(failed), 'System One · Error: questions must be an object')
+  assert.equal(render(exports.SystemOneNode({ node: at(broken, 'closed'), cwd: '/work' })), null)
+  assert.equal(render(exports.SystemOneNode({ node: at(older, 'closed'), cwd: '/work' })), null)
+  const calm = render(exports.SystemOneNode({ node: at(offline, 'closed'), cwd: '/work' }))
+  assert.deepEqual(attrs(rootOf(calm), ['', 'verdict', 'tone']), { '': 'screen', verdict: 'unavailable', tone: 'muted' })
+  assert.equal(spoken(calm), 'System One · Screen · Unavailable · System One could not be reached; System Two goes on without it')
 
   // opened, the line is the call's card, with the screenshots read in the call's session
   const opened = { ...fakeReact, useState: init => [init === false ? true : typeof init === 'function' ? init() : init, () => {}] }
@@ -745,6 +774,22 @@ test('a system_one call keeps one line in its turn once the turn ends and folds 
   const card = render(open.SystemOneNode({ node: at(look, 'closed'), cwd: '/work' }))
   assert.ok(parts(card).includes('action') && textOf(card).includes('Did not work 0.03'), textOf(card))
   assert.deepEqual(findAll(card, props => props['data-system-one-part'] === 'shot').map(shot => shot.props['data-system-one-image']), ['03-click.png', '02-open.png', '03-click.png'])
+})
+
+test('Chat tells a failed call apart as the host records it, and the row of a call left out takes no room', async () => {
+  const { failureOf } = await import('../src/records.js')
+  const { exports } = load()
+  for (const message of [
+    'System One is unavailable: it is busy (Decision API 429 rate_limit_exceeded). Go on without it.', 'Decision API 502', 'Decision API unreachable: timeout',
+    'no System One key: set VLLM_SR_API_KEY', 'tool call aborted', 'the user rejected tool "system_one"', 'question "labels": a span question names all its labels',
+    'Decision API 400 invalid_request: x', 'ENOENT: no such file or directory', 'invalid arguments: missing required property "image"', '',
+  ]) {
+    assert.equal(exports.failureOf(message), failureOf(message), message)
+    assert.equal(exports.failureOf(`Error: ${message}`), failureOf(`Error: ${message}`), message)
+  }
+  const tags = []
+  load({ document: { head: { appendChild: tag => tags.push(tag) }, createElement: () => ({ dataset: {} }), querySelector: () => null } })
+  assert.match(tags[0].textContent, /\[data-chat-call-id\]:has\(>\[data-system-one-hidden\]\)/)
 })
 
 test('a done-check shows the passages of what System Two read that back its answer', () => {

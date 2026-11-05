@@ -50,14 +50,21 @@ export function parseCsv(text) {
 function recordText(record, textField) {
   if (typeof record === 'string') return { text: record, segments: [{ start: 0, end: record.length }] }
   const shown = value => (typeof value === 'string' ? { value } : { value: JSON.stringify(value) ?? '', json: true })
+  let keys = Object.keys(record)
   if (textField) {
-    if (record[textField] === undefined) throw new Error(`text_field "${textField}" is not a field of the items; they have ${Object.keys(record).map(key => `"${key}"`).join(', ')}`)
-    const { value, json } = shown(record[textField])
-    return { text: value, segments: [{ field: textField, start: 0, end: value.length, ...(json ? { json } : {}) }] }
+    // one field, or several as "subject,body"; a field named in another case is that field
+    const named = textField.split(/\s*[,+|]\s*/).filter(Boolean).map(name => (record[name] !== undefined ? name : keys.find(key => key.toLowerCase() === name.toLowerCase()) ?? name))
+    const missing = named.find(name => record[name] === undefined)
+    if (missing !== undefined) throw new Error(`text_field "${missing}" is not a field of the items; they have ${keys.map(key => `"${key}"`).join(', ')}`)
+    if (named.length === 1) {
+      const { value, json } = shown(record[named[0]])
+      return { text: value, segments: [{ field: named[0], start: 0, end: value.length, ...(json ? { json } : {}) }] }
+    }
+    keys = named
   }
   let text = ''
   const segments = []
-  for (const [key, field] of Object.entries(record)) {
+  for (const [key, field] of keys.map(key => [key, record[key]])) {
     if (text) text += '\n'
     text += `${key}: `
     const { value, json } = shown(field)

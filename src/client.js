@@ -165,8 +165,11 @@ export function createDecisionClient(options) {
         return { json: JSON.parse(response.text), requestId: response.headers['x-request-id'] }
       }
       let code
+      let said
       try {
-        code = JSON.parse(response.text).error?.code
+        const error = JSON.parse(response.text).error
+        code = error?.code
+        said = typeof error?.message === 'string' ? error.message.replace(/\s+/g, ' ').trim().slice(0, 240) : undefined
       } catch {
         code = undefined
       }
@@ -178,7 +181,9 @@ export function createDecisionClient(options) {
         await sleep(wait + Math.random() * 200, undefined, signal ? { signal } : undefined)
         continue
       }
-      throw new DecisionError(`Decision API ${response.status}${code ? ` ${code}` : ''}`, response.status, code)
+      // a refused request says why, so that a call System Two wrote can be corrected
+      const why = said && response.status >= 400 && response.status < 500 && response.status !== 401 && response.status !== 429 ? `: ${said}` : ''
+      throw new DecisionError(`Decision API ${response.status}${code ? ` ${code}` : ''}${why}`, response.status, code)
     }
   }
 
@@ -236,6 +241,25 @@ export function createDecisionClient(options) {
   }
 
   return { ask, warm, models, hasKey: async () => Boolean(await apiKey()), close: () => agent.destroy() }
+}
+
+/**
+ * Whether an error says System One could not answer at all (unreachable, overloaded, out of quota, no or a refused
+ * key) rather than that a call asked for something it cannot answer.
+ */
+export function unavailable(error) {
+  if (!(error instanceof DecisionError)) return false
+  return error.status === 0 || error.status === 401 || error.status === 403 || error.status === 429 || error.status >= 500
+}
+
+/** What System Two reads when a tool call found System One unavailable after its retries: why, and to go on. */
+export function unavailableText(error) {
+  const why = error.status === 429 && error.code === 'quota_exceeded' ? 'the key\'s daily quota is spent until 00:00 UTC'
+    : error.status === 429 ? 'it is busy'
+      : error.status === 401 ? 'it has no valid key'
+        : error.status === 403 ? 'the key may not use this model'
+          : 'it could not be reached'
+  return `System One is unavailable: ${why} (${error.message}). Go on without it: do this step another way, or tell the user.`
 }
 
 /** Probability that a noul answer is yes, or undefined when the question failed. */
