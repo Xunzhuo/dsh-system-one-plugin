@@ -4,8 +4,6 @@
 
 <h1 align="center">System Duo</h1>
 
-<h3 align="center">Make your agent think <i>fast</i> and <i>slow</i>.</h3>
-
 <p align="center">
 <code>@vllm-sr/dsh</code> gives your DeepSeek Harness agent a System One: fast decision models that triage, guard, shield, mask and check every step, while System Two, <code>vllm-sr/auto</code>, thinks it through.
 </p>
@@ -17,7 +15,7 @@
 </p>
 
 <p align="center">
-<a href="https://app.vllm-sr.ai/#harness"><img alt="Make your agent think fast and slow, from the System Duo launch film" src="https://raw.githubusercontent.com/Xunzhuo/dsh-system-one-plugin/main/docs/assets/hero.gif" width="100%"></a>
+<a href="https://app.vllm-sr.ai/#harness"><img alt="Make your agent think fast and slow." src="https://raw.githubusercontent.com/Xunzhuo/dsh-system-one-plugin/main/docs/assets/hero.gif" width="100%"></a>
 </p>
 
 ## Quick start
@@ -32,9 +30,6 @@ On its first run the plugin fetches its own free key from [System Duo](https://a
 evaluation use ([terms](https://app.vllm-sr.ai/terms), [privacy](https://app.vllm-sr.ai/privacy)), and makes
 `vllm-sr/auto` your default model. You need Node 24.9 or later; the first line installs DeepSeek Harness and pnpm,
 which `dsh plugin` uses to install plugins.
-
-pnpm installs a release only once it is a day old, so a new version of the plugin reaches these lines a day after it
-is published.
 
 ## What System One does in your agent loop
 
