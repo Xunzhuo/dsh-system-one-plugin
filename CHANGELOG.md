@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.12 (2026-11-06)
+
+- **A new README.** The front page now shows what the plugin does at a glance: the vLLM Semantic Router logo and the
+  DeepSeek Harness mark it is for, the launch film's "Make your agent think fast and slow.", three install lines that
+  name no version, one real card per reflex and tool from the demo recordings, the 21 live sessions, a diagram of
+  System One and System Two behind one router, the essential options and a short FAQ. The full reference (every
+  option, the tools' questions, what Chat shows and its selectors, what is sent where, what we measured) moved to
+  `docs/reference.md`, where the selector test now reads it. The images live in `docs/assets/` and stay out of the
+  package. Nothing the plugin does has changed.
+
 ## 0.6.11 (2026-11-05)
 
 - **System Two's System One calls work on the first try more often.** Over every `system_one` and
