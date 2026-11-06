@@ -44,7 +44,14 @@ runs `npm publish --access public --provenance`. A version that is already on np
 published by hand runs green. To run it again for an existing tag, start **Publish** from the Actions tab with the tag
 under "Use workflow from" (`gh workflow run publish.yml --ref v0.3.1`); a run on a branch publishes nothing.
 
-3. Once `npm view @vllm-sr/dsh version` shows the new version, name it on System Duo's site too, and release the site.
-   The DeepSeek Harness lines of [app.vllm-sr.ai](https://app.vllm-sr.ai)'s "Ways in" and of its
-   [docs](https://app.vllm-sr.ai/docs#deepseek-harness) (web and headless) name the version, as README.md's do, and
-   install the old one until they change.
+3. Leave System Duo's site as it is. The DeepSeek Harness lines of [app.vllm-sr.ai](https://app.vllm-sr.ai)'s
+   "Ways in" and of its [docs](https://app.vllm-sr.ai/docs#deepseek-harness) (web and headless) name no version, and
+   neither do README.md's install lines: `dsh plugin --profile web add @vllm-sr/dsh`. pnpm installs a bare name only
+   once a release is a day old, so both give a new version a day after `npm view @vllm-sr/dsh version` shows it, with
+   no site release.
+
+   Keep releases at least a day apart. Until the newest release is a day old, the bare name installs the newest one
+   that is, so a release that follows another within the day keeps visitors on the one before both, and a release
+   replaced within its first day still reaches them once it turns a day old. The site's and README.md's install lines
+   both stay unversioned: whoever cannot wait a day names the version, as README.md's FAQ says
+   (`@vllm-sr/dsh@<version>`).
