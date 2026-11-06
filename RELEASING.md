@@ -1,8 +1,11 @@
 # Releasing
 
-`@vllm-sr/dsh` goes to npm from GitHub Actions with [trusted publishing](https://docs.npmjs.com/trusted-publishers):
-[`publish.yml`](.github/workflows/publish.yml) signs in to npm with a short-lived OIDC token, so the repository holds
-no npm token, and npm attaches a provenance statement to every version it publishes.
+`@vllm-sr/dsh` is published to npm by hand, from a tarball checked first, and its tag follows ([Release](#release)).
+[`publish.yml`](.github/workflows/publish.yml) runs on the tag, finds the version on npm and stays green. The workflow
+is ready for [trusted publishing](https://docs.npmjs.com/trusted-publishers), where it signs in to npm with a
+short-lived OIDC token, so the repository holds no npm token, and npm attaches a provenance statement to every
+version it publishes. That is not configured for `@vllm-sr/dsh`: npm refused the v0.6.12 tag's Publish run with
+E404, and every 0.6.x release was published by hand.
 
 ## Turn on trusted publishing
 
@@ -32,19 +35,35 @@ not supported for provider: null". That keeps a publish from a laptop deliberate
    install lines name no version, so they need no change: pnpm installs a bare name once a release is a day old. When
    the supported DeepSeek Harness range changes, change `engines.dsh` and the `@deepseek-ai/dsh-*` peer ranges
    together, and the `cordis` and `schemastery` ranges to the versions that harness ships.
-2. Tag the merge commit and push the tag:
+2. Publish the version by hand, before its tag. From a clean checkout of the merge commit, run the tests, pack the
+   tarball, check what it holds, and publish that file. The npm token is only in `$HOME/.config/npm-publish/npmrc`
+   (mode 600): npm reads it through `NPM_CONFIG_USERCONFIG`, and the token is never printed or put on a command line.
+
+   ```bash
+   npm test
+   npm pack                        # writes vllm-sr-dsh-0.3.1.tgz
+   tar tzf vllm-sr-dsh-0.3.1.tgz   # package.json, README.md, LICENSE, cordis.patch.yml, src/ and web/ only
+   NPM_CONFIG_USERCONFIG="$HOME/.config/npm-publish/npmrc" \
+     npm publish ./vllm-sr-dsh-0.3.1.tgz --access public --provenance=false
+   npm view @vllm-sr/dsh version   # 0.3.1
+   ```
+
+   Outside CI `--provenance=false` is needed (`publishConfig.provenance` is `true`), and the `./` keeps npm from
+   reading the file name as a GitHub shorthand.
+3. Once `npm view @vllm-sr/dsh version` shows the new version, tag the merge commit and push the tag:
 
    ```bash
    git tag -a v0.3.1 -m "@vllm-sr/dsh 0.3.1"
    git push origin v0.3.1
    ```
 
-The workflow runs the tests, stops unless the tag is `v` followed by `package.json`'s version, lists the tarball, and
-runs `npm publish --access public --provenance`. A version that is already on npm is skipped, so the tag of a version
-published by hand runs green. To run it again for an existing tag, start **Publish** from the Actions tab with the tag
-under "Use workflow from" (`gh workflow run publish.yml --ref v0.3.1`); a run on a branch publishes nothing.
-
-3. Leave System Duo's site as it is. The DeepSeek Harness lines of [app.vllm-sr.ai](https://app.vllm-sr.ai)'s
+   The tag's Publish run tests it, stops unless the tag is `v` followed by `package.json`'s version, lists the
+   tarball, finds the version on npm ("@vllm-sr/dsh@0.3.1 is already on npm; nothing to publish.") and stays green. A
+   tag pushed before the version is on npm fails at Publish with E404: publish by hand, then run it again (`gh run
+   rerun <run id>`, or start **Publish** for the tag: `gh workflow run publish.yml --ref v0.3.1`; a run on a branch
+   publishes nothing). If trusted publishing is configured on npmjs.com later (the package owner's call), the order
+   may flip back: push the tag first and let the workflow publish, with provenance.
+4. Leave System Duo's site as it is. The DeepSeek Harness lines of [app.vllm-sr.ai](https://app.vllm-sr.ai)'s
    "Ways in" and of its [docs](https://app.vllm-sr.ai/docs#deepseek-harness) (web and headless) name no version, and
    neither do README.md's install lines: `dsh plugin --profile web add @vllm-sr/dsh`. pnpm installs a bare name only
    once a release is a day old, so both give a new version a day after `npm view @vllm-sr/dsh version` shows it, with
