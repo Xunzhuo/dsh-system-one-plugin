@@ -647,7 +647,7 @@ window.__ModuleLoader__.load({
         return n ? String(n) : undefined
       }
 
-      // a public contract (README.md, "Selectors"); React leaves out an attribute whose value is undefined
+      // a public contract (docs/reference.md, "Selectors"); React leaves out an attribute whose value is undefined
       function attributes(kind, state, worst) {
         return {
           'data-system-one': kind,

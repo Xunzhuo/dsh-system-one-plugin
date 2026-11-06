@@ -195,7 +195,7 @@ const attrs = (element, names) => Object.fromEntries(names.map(name => [name, el
 const parts = tree => findAll(tree, props => props['data-system-one-part']).map(element => element.props['data-system-one-part'])
 const ROOT = ['', 'reflex', 'verdict', 'outcome', 'why', 'tone', 'count', 'turn', 'step']
 
-test('every element carries the selectors README.md documents', () => {
+test('every element carries the selectors docs/reference.md documents', () => {
   const { exports } = load()
   const [guard, shield, routine, done, triage] = assemble(exports.definition, [
     record({ reflex: 'guard', step: 4, callId: 'c2', tool: 'bash', call: 'git reset --hard v1.3', answers: guardAnswers(2.0), verdict: 'ask', why: 'its risk is Dangerous' }),
@@ -231,11 +231,11 @@ test('every element carries the selectors README.md documents', () => {
   assert.deepEqual(attrs(findAll(triageTree, props => props['data-system-one'])[0], ['', 'reflex', 'verdict', 'turn']), { '': 'card', reflex: 'triage', verdict: 'brief', turn: '2' })
   assert.deepEqual(findAll(triageTree, props => props['data-system-one-fact']).map(fact => fact.props['data-system-one-fact']), ['kind', 'effort', 'unclear', 'risky'])
 
-  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
-  const selectors = readme.slice(readme.indexOf('### Selectors'), readme.indexOf('## Your data'))
+  const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8')
+  const selectors = reference.slice(reference.indexOf('### Selectors'), reference.indexOf('## Your data'))
   const drawn = new Set([...SOURCE.matchAll(/(?:'data-system-one-part'|\bpart): (?:marked \? )?'([a-z-]+)'/g), ...SOURCE.matchAll(/\bid: '([a-z-]+)', label:/g)].map(match => match[1]))
   assert.ok(drawn.size >= 30)
-  for (const value of drawn) assert.ok(selectors.includes(`\`${value}\``), `README.md documents ${value}`)
+  for (const value of drawn) assert.ok(selectors.includes(`\`${value}\``), `docs/reference.md documents ${value}`)
   for (const [, value] of selectors.matchAll(/data-system-one-(?:part|fact)="([a-z-]+)"/g)) assert.ok(drawn.has(value), `${value} is drawn by web/client.js`)
 })
 
