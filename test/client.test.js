@@ -16,21 +16,39 @@ function fakeApi(handler) {
 
 const answer = state => ({ injection: { type: 'noul', noul: state.includes('attack') ? 0.99 : 0.01 } })
 
-test('batches inputs into state + states and returns answers in input order', async () => {
+test('batches several inputs into states entries, nothing of a standard request beside them, and returns answers in input order', async () => {
   let seen
   const { server, url } = await fakeApi((body, request, response) => {
     seen = { auth: request.headers.authorization, body }
-    const states = Object.fromEntries(Object.entries(body.states ?? {}).map(([k, v]) => [k, { answers: answer(v.state), usage: { input_tokens: 10 } }]))
-    response.end(JSON.stringify({ answers: answer(body.state), states, model: body.model, usage: { input_tokens: 10 } }))
+    const states = Object.fromEntries(Object.entries(body.states ?? {}).map(([k, v]) => [k, { model: body.model, answers: answer(v.state), usage: { input_tokens: 10 } }]))
+    // a batch's usage counts every entry
+    response.end(JSON.stringify({ model: body.model, states, usage: { input_tokens: 10 * Object.keys(states).length } }))
   })
   process.env.S1_TEST_KEY = 'sk-vsr-test'
   const client = createDecisionClient({ baseURL: url, apiKeyEnv: 'S1_TEST_KEY' })
   const r = await client.ask({ model: 'm', questions: { injection: { type: 'noul', instructions: 'q' } }, inputs: [{ state: 'clean' }, { state: 'attack' }, { state: 'clean too' }] })
   assert.equal(seen.auth, 'Bearer sk-vsr-test')
-  assert.equal(seen.body.state, 'clean')
-  assert.deepEqual(Object.keys(seen.body.states), ['i1', 'i2'])
+  assert.deepEqual(Object.keys(seen.body).sort(), ['model', 'states'])
+  assert.deepEqual(Object.keys(seen.body.states), ['1', '2', '3'])
+  assert.deepEqual(seen.body.states['1'], { state: 'clean', questions: { injection: { type: 'noul', instructions: 'q' } } })
   assert.deepEqual(r.answers.map(a => a.injection.noul), [0.01, 0.99, 0.01])
   assert.equal(r.inputTokens, 30)
+  client.close()
+  server.close()
+})
+
+test('asks about one input with a standard request', async () => {
+  let seen
+  const { server, url } = await fakeApi((body, request, response) => {
+    seen = body
+    response.end(JSON.stringify({ model: body.model, answers: answer(body.state), usage: { input_tokens: 12 } }))
+  })
+  process.env.S1_TEST_KEY = 'sk-vsr-test'
+  const client = createDecisionClient({ baseURL: url, apiKeyEnv: 'S1_TEST_KEY' })
+  const r = await client.ask({ model: 'm', questions: { injection: { type: 'noul', instructions: 'q' } }, inputs: [{ state: 'attack', images: ['data:image/png;base64,AA=='] }] })
+  assert.deepEqual(seen, { model: 'm', state: 'attack', questions: { injection: { type: 'noul', instructions: 'q' } }, images: ['data:image/png;base64,AA=='] })
+  assert.deepEqual(r.answers.map(a => a.injection.noul), [0.99])
+  assert.equal(r.inputTokens, 12)
   client.close()
   server.close()
 })

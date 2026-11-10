@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 (unreleased: published with the Decision API's batch form)
+
+- **System One calls about several inputs go as a batch.** They are named requests under `states`, "1", "2", ... in
+  input order, each with its own state and questions, and nothing of a standard request beside them: the batch form
+  of vLLM Semantic Router's System One API (runtime contract 4.0.0). A call about one input is a standard request, as
+  before. The Decision API at app.vllm-sr.ai refuses the old form, the first input on top and the others under
+  `states`, with 400 `invalid_request`, so with earlier versions a call about more than one input fails there:
+  update to this one. A call's input tokens are the batch's own `usage`, which counts every entry. Nothing else the
+  plugin does has changed.
+
 ## 0.6.12 (2026-11-06)
 
 - **A new README.** The front page now shows what the plugin does at a glance: the vLLM Semantic Router logo and the

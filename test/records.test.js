@@ -149,17 +149,24 @@ function fakeDecisions({ delayMs = 0 } = {}) {
         }
         if (request.url !== '/v1/decisions') return response.end('{}')
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-        requests.push({ model: body.model, ids: Object.keys(body.questions), more: Object.values(body.states ?? {}).map(input => Object.keys(input.questions)) })
-        Object.defineProperty(requests.at(-1), 'stateChars', { value: (typeof body.state === 'string' ? body.state : JSON.stringify(body.state)).length })
+        // a standard request, or a batch with nothing of a standard request beside its entries, as the Decision API takes
+        if (body.states !== undefined && ['state', 'questions', 'images', 'videos'].some(field => field in body)) {
+          response.writeHead(400, { 'content-type': 'application/json' })
+          return response.end(JSON.stringify({ error: { code: 'invalid_request', message: 'a request is a standard request (state and questions) or a batch (states), not both' } }))
+        }
+        const inputs = body.states === undefined ? [body] : Object.values(body.states)
+        requests.push({ model: body.model, ids: Object.keys(inputs[0].questions), more: inputs.slice(1).map(input => Object.keys(input.questions)) })
+        Object.defineProperty(requests.at(-1), 'stateChars', { value: (typeof inputs[0].state === 'string' ? inputs[0].state : JSON.stringify(inputs[0].state)).length })
         // the service's estimate: every question reads its state again, about a token per UTF-8 byte
         const bytes = state => Buffer.byteLength(typeof state === 'string' ? state : JSON.stringify(state))
-        Object.defineProperty(requests.at(-1), 'estimate', { value: bytes(body.state) * Object.keys(body.questions).length + Object.values(body.states ?? {}).reduce((sum, input) => sum + bytes(input.state) * Object.keys(input.questions).length, 0) })
+        Object.defineProperty(requests.at(-1), 'estimate', { value: inputs.reduce((sum, input) => sum + bytes(input.state) * Object.keys(input.questions).length, 0) })
         // a Vela 3.0 model answers the decisions with its d3 base, and the span questions too
         const vela3 = body.model === 'vllm-sr/vela3-turbo'
         const of = (questions, state) => (vela3 ? { answers: answer(questions, state), spans: spansFor(questions, state) } : { answers: answer(questions, state) })
-        const states = Object.fromEntries(Object.entries(body.states ?? {}).map(([id, input]) => [id, of(input.questions, input.state)]))
         response.setHeader('x-request-id', 'req-1')
-        const answered = JSON.stringify({ model: body.model, ...of(body.questions, body.state), states })
+        const answered = body.states === undefined
+          ? JSON.stringify({ model: body.model, ...of(body.questions, body.state) })
+          : JSON.stringify({ model: body.model, states: Object.fromEntries(Object.entries(body.states).map(([id, input]) => [id, { model: body.model, ...of(input.questions, input.state) }])) })
         setTimeout(() => response.end(answered), delayMs)
       })
     })

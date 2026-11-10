@@ -10,7 +10,7 @@ import https from 'node:https'
 import { homedir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 
-/** Inputs answered by one request: the top-level state plus `limits.max_states` more. */
+/** Inputs answered by one request: one as a standard request, more as a batch with an entry each. */
 export const ITEMS_PER_REQUEST = 9
 
 /**
@@ -205,22 +205,17 @@ export function createDecisionClient(options) {
     if (inputs.length === 0 || inputs.length > ITEMS_PER_REQUEST) {
       throw new RangeError(`one request answers 1 to ${ITEMS_PER_REQUEST} inputs, got ${inputs.length}`)
     }
-    const [first, ...rest] = inputs
-    const body = { model, state: first.state, questions: first.questions ?? questions }
-    if (first.images?.length) body.images = first.images
-    if (rest.length > 0) {
-      body.states = Object.fromEntries(rest.map((input, index) => [
-        `i${index + 1}`,
-        { state: input.state, questions: input.questions ?? questions, ...input.images?.length ? { images: input.images } : {} },
-      ]))
-    }
+    const entry = input => ({ state: input.state, questions: input.questions ?? questions, ...input.images?.length ? { images: input.images } : {} })
+    // a batch has nothing of a standard request beside its entries, named "1", "2", ... in input order
+    const name = index => String(index + 1)
+    const body = inputs.length === 1 ? { model, ...entry(inputs[0]) } : { model, states: Object.fromEntries(inputs.map((input, index) => [name(index), entry(input)])) }
     await acquire(signal)
     const started = performance.now()
     try {
       const { json, requestId } = await post('/v1/decisions', body, signal, { timeoutMs: callTimeoutMs, retries: callRetries, waitMs })
-      const each = field => [json[field] ?? {}, ...rest.map((_, index) => json.states?.[`i${index + 1}`]?.[field] ?? {})]
-      let inputTokens = json.usage?.input_tokens ?? 0
-      for (const entry of Object.values(json.states ?? {})) inputTokens += entry.usage?.input_tokens ?? 0
+      const each = field => (inputs.length === 1 ? [json[field] ?? {}] : inputs.map((_, index) => json.states?.[name(index)]?.[field] ?? {}))
+      // a batch's usage counts every entry
+      const inputTokens = json.usage?.input_tokens ?? 0
       return { answers: each('answers'), spans: each('spans'), thresholds: each('thresholds'), ms: performance.now() - started, model: json.model ?? model, inputTokens, requestId }
     } finally {
       release()

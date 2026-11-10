@@ -101,9 +101,17 @@ function fakeDecisions() {
           return response.end(JSON.stringify({ error: { code: 'rate_limit_exceeded' } }))
         }
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-        asked.push(body)
-        const states = Object.fromEntries(Object.entries(body.states ?? {}).map(([id, input]) => [id, decide(input.questions, input.state, input.images)]))
-        response.end(JSON.stringify({ model: body.model, ...decide(body.questions, body.state, body.images), states }))
+        // a standard request, or a batch with nothing of a standard request beside its entries, as the Decision API takes
+        if (body.states !== undefined && ['state', 'questions', 'images', 'videos'].some(field => field in body)) {
+          response.writeHead(400, { 'content-type': 'application/json' })
+          return response.end(JSON.stringify({ error: { code: 'invalid_request', message: 'a request is a standard request (state and questions) or a batch (states), not both' } }))
+        }
+        const inputs = body.states === undefined ? [body] : Object.values(body.states)
+        // each request as its first input reads, with all of its inputs
+        asked.push({ model: body.model, ...inputs[0], inputs })
+        if (body.states === undefined) return response.end(JSON.stringify({ model: body.model, ...decide(body.questions, body.state, body.images) }))
+        const states = Object.fromEntries(Object.entries(body.states).map(([id, input]) => [id, { model: body.model, ...decide(input.questions, input.state, input.images) }]))
+        response.end(JSON.stringify({ model: body.model, states }))
       })
     })
     server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, asked, refuse: n => (refusals = n) }))
@@ -290,7 +298,7 @@ test('grounded checks: halu marks the words of each claim its sources do not sup
   assert.equal(asked.length, 1)
   assert.deepEqual(asked[0].questions, { unsupported: { preset: 'halu' }, backed: { type: 'span', criteria: ['evidence'], over: 'context' } })
   assert.deepEqual(asked[0].state, { context: `[CHANGELOG.md]\n${changelog.trim()}`, answer: 'Export your results as Parquet.' })
-  assert.equal(Object.keys(asked[0].states).length, 3)
+  assert.equal(asked[0].inputs.length, 4)
 
   const rows = await readRows(value.output)
   assert.deepEqual(rows.map(row => row.answers.unsupported.spans.map(span => span.text)), [[], ['a native Snowflake connector'], [], ['2.4']])
@@ -684,7 +692,7 @@ test('grounded items share requests only as far as the token estimate allows, an
   await run({ questions: { unsupported: { preset: 'halu' }, backed: { preset: 'evidence' } }, file: 'draft.md', sources: ['CHANGELOG.md'] })
   const bytes = state => Buffer.byteLength(typeof state === 'string' ? state : JSON.stringify(state))
   for (const body of asked) {
-    const estimate = [body, ...Object.values(body.states ?? {})].reduce((sum, input) => sum + bytes(input.state) * Object.keys(input.questions ?? body.questions).length, 0)
+    const estimate = body.inputs.reduce((sum, input) => sum + bytes(input.state) * Object.keys(input.questions).length, 0)
     assert.ok(estimate <= 131072, `${estimate} estimated tokens`)
   }
   assert.ok(asked.length >= 2, 'three items of about 22,000 bytes, two questions each, take more than one request')
