@@ -2,7 +2,8 @@
  * System One in the conversation. Every decision System One makes during a turn (triage, guard, shield, done-check)
  * is written to the session as one plugin record: an ignorable event beside the events it judged, which the model
  * never sees and other readers skip. The plugin's browser half (web/client.js) draws each record in the Web UI's Chat.
- * Records carry what the Decision API answered (model, latency, answers) and what the plugin did with it.
+ * Records carry what the Decision API answered (model, latency, answers) and what the plugin did with it. A `route`
+ * record names the model vLLM Semantic Router picked for one System Two call, from its answer's headers.
  */
 import { clip, redact } from './trace.js'
 

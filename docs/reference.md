@@ -69,13 +69,36 @@ of your profile patch stay as they are.
 
 | Reflex | Hook | What System One answers | What happens |
 | --- | --- | --- | --- |
-| Triage | `agent/pre-step` | kind of work, effort, unclear?, risky? | a one-line brief joins the request, with hints (use `system_one` for batch work, ask first when unclear) |
+| Triage | `agent/pre-step` | kind of work, effort, unclear?, risky? | a one-line brief goes in before the request, with hints (use `system_one` for batch work, ask first when unclear) |
 | Guard | `tools/pre-execute` | risk (Safe, Normal, Dangerous, Critical), leaks secrets?, on task?, harmful? (router signals) | the call runs, waits for your approval (Web UI), or is denied with the reason (headless) |
 | Shield | `tools/post-execute` | does this passage give orders to an AI agent? | flagged passages are scored again line by line, and only the injected lines are removed |
 | Privacy | `tools/post-execute` | which words are personal data? | names, e-mail addresses, phone numbers and the like become `[LABEL]` before System Two reads them |
 | Done-check | `agent/turn-stopping` | complete?, checked?, waiting for you?, declined? (router signal), which words nothing read supports, what backs the answer | an unfinished turn goes back once or twice to finish and verify |
 | Tool | `system_one` | any rubric the LLM writes, over a file of items or images: choices, yes/no, scores, boxes, the words that carry its labels, personal data, claims its sources don't back, router signals | one result row per item (JSONL or CSV), a summary, and on request a redacted copy or annotated images |
 | Screen | `system_one_screen` | on one screenshot: where to click, what the screen shows, whether the last action worked | the pixel to click and the box of each target, the answers, and a verdict on the action |
+
+### System Two through the router
+
+`vllm-sr/auto` is vLLM Semantic Router: it reads each request and picks the model and the reasoning for it. The plugin
+helps it read the right things and shows what it picked:
+
+- **It routes on your words.** The router routes on the last user message that has text. The plugin's own notices
+  (the triage brief, the free-key line) go in before your request, and in a session on the router your request comes
+  after DeepSeek Harness's context snapshots too (the working directory, the time). So a correction such as "no, I
+  meant the staging database" reaches the router as you wrote it. Every notice the plugin adds starts with
+  `[System One` or `[System Duo]`, so a router can also leave the later ones out, those that follow a tool result or
+  send System Two back: `global.router.routing_input.skip_user_messages_matching: ['^\[System (?:One|Duo)[\] ]']`.
+- **One session, one model.** Each conversation request carries the agent session's id as `x-session-id` and
+  `x-conversation-id` (a random id DeepSeek Harness gives each session, as `session-<uuid>`), so the router keeps the
+  session's turns together: with its session protection on, a session stays on one model, which keeps the provider's
+  prompt cache warm. Titles and compactions carry none.
+- **The model under each turn.** The router names its pick in the answer's headers (`x-vsr-selected-model`, and
+  `x-vsr-selected-decision`); the plugin also asks for its trace (`x-vsr-debug: true`), whose `reasoning` says
+  whether the model thinks. Chat shows them in one muted line under the turn's answer (see below).
+
+DeepSeek Harness 0.2.2 and later take the request headers through `llm-pi-ai/request-headers`; with 0.2.1, and to read
+the answer's headers, the plugin wraps `fetch` for the router's chat request alone, inside the call that makes it.
+Requests to any other provider, and every other request, are left as they are.
 
 ### Span answers and router signals (vllm-sr/vela3-turbo)
 
@@ -224,6 +247,11 @@ a second up):
   the screen, whether it is the expected one, and, after an action, the screens before and after with **Worked** or
   **Did not work**.
 - **Free key**: a **System Duo** line under your first request when the plugin created a key, or could not.
+- **Model** (System Two, through the router): one muted line under each turn's answer with the model the router
+  picked, whether it thinks, and the router's decision, as **DeepSeek-V4.1-Flash** · thinking · agentic. When the
+  model is not the one the call before it got, that one comes first, faded, with a blue arrow:
+  GLM-5.3-Flash → **DeepSeek-V4.1-Flash**. The tooltip has the full model ids, every model before and the turn's
+  number of calls. Only requests through the router (`llmProvider`) have a line; `modelLine: false` turns it off.
 - **Spans** (vllm-sr/vela3-turbo): the words a span answer marked, in the card that used them: removed injections
   struck through, a command's dangerous part, unsupported claims of the answer underlined, and masked personal data as
   label chips in a **Privacy** card.
@@ -317,13 +345,25 @@ signals `harm` (the call) and `request-harm` (the request it serves) (guard), `p
 | An action that did not work (red) | `[data-system-one="screen"][data-system-one-action="failed"]` |
 | A target found | `[data-system-one-part="target"][data-system-one-found="yes"]` |
 
+The model line is a root of its own, `data-system-two` (`route`), with `data-system-two-model` (the model's id, as
+`deepseek/deepseek-v4.1-flash`), `data-system-two-decision`, `data-system-two-reasoning` (as the router names it: `on`,
+`off` or an effort level), `data-system-two-changed` (`yes` when it shows the model before), `data-system-two-count`
+(the turn's calls through the router) and `data-system-two-turn`. Inside it, `data-system-two-part` marks `icon`,
+`was` (each model before, its id in the tooltip), `model`, `reasoning` and `decision`.
+
+| What | Selector |
+| --- | --- |
+| The model under a turn | `[data-system-two="route"] [data-system-two-part="model"]` |
+| A turn on another model than the call before it | `[data-system-two="route"][data-system-two-changed="yes"]` |
+
 ## Your data
 
 System One sends what it decides about: the user's request (clipped), each tool call it reviews, the passages of tool
 results it screens, the end of the turn (with what the turn read, for the done-check's span answers), the items and
 sources given to the `system_one` tool, and the screenshots given to `system_one_screen`. Privacy, on by default,
 sends the results of `privacyTools` to System One whole. System Two receives the
-conversation as any LLM provider does. System Duo logs requests to improve the services and to train models; read its
+conversation as any LLM provider does, and through the router each conversation request also carries the agent
+session's random id (`x-session-id`, `x-conversation-id`; `routerSession: false` leaves it out). System Duo logs requests to improve the services and to train models; read its
 [terms](https://app.vllm-sr.ai/terms) and [privacy](https://app.vllm-sr.ai/privacy) pages before you use it with
 private code or data. Each reflex can be turned off.
 
@@ -332,7 +372,8 @@ and redacts secret-shaped strings; it never records keys. Set `trace: off` to di
 
 For the Web UI, each decision is also written to the session's own log as a plugin record
 (`plugin:vllm-sr/dsh/system-one`): its answers, model, latency and verdict, and the reviewed call in short with
-secret-shaped strings redacted. The model never sees these records, other clients skip them, and they stay with the
+secret-shaped strings redacted. A `route` record holds what the router named for one System Two call: `model`, `lane` (its
+decision), `reasoning`, and `was`, the model before, when it changed. The model never sees these records, other clients skip them, and they stay with the
 session when it is resumed or forked. `systemOneUi: off` writes none.
 
 ## Configuration
@@ -378,6 +419,10 @@ Every field has a default. Set any of them on the `system-one` row of a profile 
     privacyTools: [web_fetch, bash, read]
     screenTool: true               # the system_one_screen tool, for computer use
     screenModel: vllm-sr/vela3-turbo
+    llmProvider: vllm-sr           # the provider route of System Two's requests through the router
+    routerSession: true            # each conversation request names its session (x-session-id, x-conversation-id)
+    routerTrace: true              # ask the router for its trace (x-vsr-debug), for the model line's reasoning
+    modelLine: true                # the line under each turn with the model the router picked
 ```
 
 `systemOneUi` applies to decisions made after a restart with the new value; decisions already in a session keep the

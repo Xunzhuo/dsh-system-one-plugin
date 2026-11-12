@@ -3,7 +3,8 @@
  *
  * The host half records each decision System One makes in the session (src/records.js). This browser half turns the
  * records into Chat rows, one card or one compact line per System One call, grouped by turn, step and reflex, and draws
- * the system_one tool's row from its result. Everything it shows comes from those records and results.
+ * the system_one tool's row from its result. Everything it shows comes from those records and results, and so does the
+ * line under each turn that names the model vLLM Semantic Router picked for System Two.
  *
  * Plain JavaScript in the Web UI's client-module format, with no build step: React comes from the page's shared module
  * table. The Web UI does not start when a browser plugin fails to, so this one requires no service, attaches each part
@@ -169,6 +170,8 @@ window.__ModuleLoader__.load({
         const step = Number.isSafeInteger(data.step) ? data.step : undefined
         if ((data.reflex === 'tool' || data.reflex === 'screen') && typeof data.callId === 'string') return `c:${data.callId}`
         if (data.reflex === 'triage' && turn !== undefined) return `t${turn}:triage`
+        // the router's pick for each call of a turn: one line per turn
+        if (data.reflex === 'route' && turn !== undefined) return `t${turn}:route`
         if (['guard', 'shield', 'privacy'].includes(data.reflex) && turn !== undefined && step !== undefined) return `t${turn}:s${step}:${data.reflex}`
         // a done-check that was still deciding and its answer share one element
         if (data.reflex === 'done' && typeof data.decision === 'string') return `d:${data.decision}`
@@ -231,13 +234,14 @@ window.__ModuleLoader__.load({
         buildViewNode(context) {
           const state = context.state
           if (!state || state.rows.length === 0) return null
-          const first = context.start ?? context.matches[0]
+          // a turn's model line follows its latest call, so it ends up under the answer
+          const first = state.reflex === 'route' ? context.matches?.at(-1) ?? context.start : context.start ?? context.matches[0]
           return {
             key: context.key,
             kind: NODE_KIND,
             id: context.id,
             target: 'chat',
-            anchorSeq: first?.event?.seq ?? state.rows[0].seq,
+            anchorSeq: first?.event?.seq ?? (state.reflex === 'route' ? state.rows.at(-1) : state.rows[0]).seq,
             location: first?.location ?? { kind: 'unresolved' },
             // a call that ended in an argument error leaves no row: System Two read the error, and its retry shows
             visibility: retried(state) ? 'hidden' : 'visible',
@@ -779,12 +783,71 @@ window.__ModuleLoader__.load({
         return h(state.reflex === 'screen' ? ScreenRow : ToolRow, { block, phase: 'result', callId: row.callId, cwd, openFile, sessionId: sessionId ?? row.session })
       }
 
+      // ---- System Two's model, as the router picked it ----
+
+      // a model's own name from its id: deepseek/deepseek-v4.1-flash is DeepSeek-V4.1-Flash, qwen/qwen3.8-27b Qwen3.8-27B
+      const BRANDS = { deepseek: 'DeepSeek', glm: 'GLM', qwen: 'Qwen', gpt: 'GPT', mimo: 'MiMo', minimax: 'MiniMax', kimi: 'Kimi', llama: 'Llama' }
+      function modelName(id) {
+        return text(id).split('/').pop().split('-').map(word => {
+          const lower = word.toLowerCase()
+          const brand = Object.keys(BRANDS).find(name => lower.startsWith(name) && /^[\d.]*$/.test(lower.slice(name.length)))
+          if (brand) return BRANDS[brand] + word.slice(brand.length)
+          if (/^v\d/i.test(word)) return `V${word.slice(1)}`
+          if (/^a?\d+(?:\.\d+)?[bkm]$/i.test(word)) return word.toUpperCase()
+          return word.charAt(0).toUpperCase() + word.slice(1)
+        }).join('-')
+      }
+      // the router says on or off in its trace, or names an effort level
+      const reasoningOf = value => (value === 'on' ? 'thinking' : value === 'off' ? 'thinking off' : text(value))
+
+      function RouteGlyph() {
+        return h('svg', { viewBox: '0 0 16 16', width: 12, height: 12, 'aria-hidden': true },
+          h('path', { d: 'M2 8h4M6 8c2 0 2.5-3.5 5-3.5h3M6 8c2 0 2.5 3.5 5 3.5h3', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))
+      }
+
+      // System Two's model for a turn: one muted line under its answer, with the reasoning and the decision the router
+      // named. When the model is not the one the call before it got, that one comes first, faded, with an arrow.
+      function RouteLine({ state }) {
+        const fresh = useFresh(`route:${idOf(state.rows[0])}`, state.rows[0].time)
+        const rows = state.rows.filter(row => text(row.model))
+        if (rows.length === 0) return null
+        const last = rows[rows.length - 1]
+        const chain = text(rows[0].was) && rows[0].was !== rows[0].model ? [rows[0].was] : []
+        for (const row of rows) if (chain[chain.length - 1] !== row.model) chain.push(row.model)
+        // the line names the one model before; the tooltip all of them
+        const before = chain.slice(-2, -1)
+        const reasoning = reasoningOf(last.reasoning)
+        const decision = text(last.lane).replace(/_/g, ' ')
+        const said = [[...before, last.model].map(modelName).join(' → '), reasoning, decision].filter(Boolean).join(' · ')
+        const told = `vLLM Semantic Router picked ${last.model}${decision ? ` for ${decision}` : ''}${text(last.reasoning) ? `, reasoning ${last.reasoning}` : ''}${rows.length > 1 ? ` (${plural(rows.length, 'call')} this turn)` : ''}${chain.length > 1 ? `, after ${chain.slice(0, -1).join(', ')}` : ''}`
+        const sep = key => h('i', { key, className: 'vsr-s2__sep', 'aria-hidden': true })
+        return h('div', {
+          className: cx('vsr-s2', before.length > 0 && 'vsr-s2--changed', fresh && 'vsr-s2--fresh'),
+          role: 'note',
+          'aria-label': `System Two: ${said}`,
+          title: told,
+          'data-system-two': 'route',
+          'data-system-two-model': last.model,
+          'data-system-two-decision': text(last.lane) || undefined,
+          'data-system-two-reasoning': text(last.reasoning) || undefined,
+          'data-system-two-changed': before.length > 0 ? 'yes' : undefined,
+          'data-system-two-count': String(rows.length),
+          'data-system-two-turn': whole(last.turn),
+        },
+        h('span', { className: 'vsr-s2__icon', 'data-system-two-part': 'icon', 'aria-hidden': true }, h(RouteGlyph)),
+        before.map((model, index) => h('span', { key: `was${index}`, className: 'vsr-s2__was', 'data-system-two-part': 'was', title: model }, modelName(model), h('i', { className: 'vsr-s2__to', 'aria-hidden': true }, '→'))),
+        h('b', { className: 'vsr-s2__model', 'data-system-two-part': 'model' }, modelName(last.model)),
+        reasoning ? [sep('r'), h('span', { key: 'reasoning', 'data-system-two-part': 'reasoning' }, reasoning)] : null,
+        decision ? [sep('d'), h('span', { key: 'decision', 'data-system-two-part': 'decision' }, decision)] : null)
+      }
+
       // A routine check (an allowed call, a clean result) is one line in either mode; a decision that changed
       // something, and the triage and done-check that frame the turn, are cards unless the mode is compact.
       function SystemOneNode(props) {
         const state = props?.node?.data
         if (!state || !Array.isArray(state.rows) || state.rows.length === 0) return null
         if (state.reflex === 'key') return h(Contained, null, h(KeyNotice, { state }))
+        if (state.reflex === 'route') return h(Contained, null, h(RouteLine, { state }))
         if (retried(state)) return null
         if (state.reflex === 'tool' || state.reflex === 'screen') return turnOpen(props.node) ? null : h(Contained, null, h(CallLine, { ...props, state }))
         const slim = state.ui === 'compact' || !standsOut(state)
@@ -1400,7 +1463,16 @@ a.vsr-s1__link{text-decoration:none}
 .vsr-s1--fresh .vsr-s1__point::after{animation:vsr-s1-ripple 1.1s var(--vsr-s1-ease) .62s 2}
 .vsr-s1--fresh .vsr-s1__thumbcell{animation:vsr-s1-rise .26s var(--vsr-s1-ease) both;animation-delay:calc(.08s + var(--vsr-s1-i,0) * 30ms)}
 .vsr-s1--fresh .vsr-s1__span--labels,.vsr-s1--fresh .vsr-s1__span--evidence{animation:vsr-s1-ink .5s ease-out .3s both}
-@media (prefers-reduced-motion:reduce){.vsr-s1,.vsr-s1 *,.vsr-s1 *::before,.vsr-s1 *::after{animation:none!important;transition:none!important}.vsr-s1__shim-deco{display:none}}
+.vsr-s2{--vsr-s2-text:var(--dsw-alias-label-secondary,#545961);--vsr-s2-muted:var(--dsw-alias-label-tertiary,#8A8F98);--vsr-s2-dot:var(--dsw-alias-label-caption,#ADB2B8);--vsr-s2-blue:#30A2FF;display:flex;flex-wrap:wrap;align-items:center;box-sizing:border-box;width:100%;margin:2px 0 8px;color:var(--vsr-s2-muted);font-size:12px;font-weight:400;line-height:20px;text-align:left;cursor:default}
+.vsr-s2__icon{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;margin-right:6px}
+.vsr-s2__model{color:var(--vsr-s2-text);font-weight:600;letter-spacing:-.005em;white-space:nowrap}
+.vsr-s2__was{white-space:nowrap}
+.vsr-s2__to{margin:0 5px;color:var(--vsr-s2-blue);font-style:normal}
+.vsr-s2__sep{display:inline-block;flex:none;width:2px;height:2px;margin:0 7px;border-radius:1px;background:var(--vsr-s2-dot)}
+.vsr-s2--changed>.vsr-s2__icon{color:var(--vsr-s2-blue)}
+.vsr-s2--fresh{animation:vsr-s2-in .3s ease-out both}
+@keyframes vsr-s2-in{from{opacity:0}}
+@media (prefers-reduced-motion:reduce){.vsr-s1,.vsr-s1 *,.vsr-s1 *::before,.vsr-s1 *::after,.vsr-s2{animation:none!important;transition:none!important}.vsr-s1__shim-deco{display:none}}
 [data-chat-call-id]:has(>[data-system-one-hidden]),[data-chat-call-id]:has(>[data-slot]>[data-system-one-hidden]),[data-chat-flow-kind=tool-call]:has(>[data-slot]>[data-chat-call-id]>[data-slot]>[data-system-one-hidden]){display:none}
 `
       if (typeof document !== 'undefined') {
@@ -1452,6 +1524,7 @@ a.vsr-s1__link{text-decoration:none}
       exports.definition = definition
       exports.viewOf = viewOf
       exports.failureOf = failureOf
+      exports.modelName = modelName
       exports.SystemOneNode = SystemOneNode
       exports.SystemOneToolRow = SystemOneToolRow
       exports.SystemOneScreenRow = SystemOneScreenRow
