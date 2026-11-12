@@ -1,6 +1,26 @@
 # Changelog
 
-## 0.7.0 (unreleased: published with the Decision API's batch form)
+## 0.8.0 (2026-11-12)
+
+- **vLLM Semantic Router routes on your words.** The router reads the last user message that has text, and the
+  triage brief used to come after your request, so a correction such as "that's not right" was routed as the brief.
+  The plugin's notices now go in before the request, and in a session on the router the request also comes after
+  DeepSeek Harness's working-directory and time snapshots. Every notice the plugin adds starts with `[System One` or
+  `[System Duo]`, the shield's too, so a router can leave out the ones that come later in a turn
+  (`routing_input.skip_user_messages_matching`).
+- **One session, one model.** Each conversation request to the router carries the agent session's random id as
+  `x-session-id` and `x-conversation-id`. Until now every request looked like a new session to the router, which then
+  fell back to a hash of the whole history, so its session protection could never keep a session on one model.
+  Titles and compactions carry none; `routerSession: false` leaves the headers out.
+- **The model under each turn.** Chat shows one muted line under each turn's answer: the model the router picked,
+  whether it thinks, and its decision, as `DeepSeek-V4.1-Flash · thinking · agentic`, from the answer's headers
+  (`x-vsr-selected-model`, `x-vsr-selected-decision`, and the `reasoning` of the trace the plugin asks for with
+  `x-vsr-debug`). When the model is not the one the call before it got, the line shows that one first, faded, with an
+  arrow. Only requests through the router have a line (`llmProvider`, `vllm-sr` by default); `modelLine: false` turns
+  it off. DeepSeek Harness 0.2.2 and later take the request headers through `llm-pi-ai/request-headers`; for 0.2.1,
+  and to read the answer's headers, the plugin wraps `fetch` for the router's chat request alone.
+
+## 0.7.0 (2026-11-10)
 
 - **System One calls about several inputs go as a batch.** They are named requests under `states`, "1", "2", ... in
   input order, each with its own state and questions, and nothing of a standard request beside them: the batch form

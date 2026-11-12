@@ -807,3 +807,66 @@ test('a done-check shows the passages of what System Two read that back its answ
     [['evidence', 'requires-python = ">=3.11"', '0.96'], ['evidence', '14 passed in 0.42s', '0.88']])
   for (const part of ['evidence', 'backing', 'source']) assert.ok(parts(tree).includes(part), `part ${part}`)
 })
+
+// a route record as the host half writes it after each System Two call through the router
+const route = (data, extra) => record({ reflex: 'route', model: 'deepseek/deepseek-v4.1-flash', lane: 'agentic', reasoning: 'on', ms: undefined, ...data }, extra)
+const two = (element, names) => Object.fromEntries(names.map(name => [name, element.props[`data-system-two${name ? `-${name}` : ''}`]]))
+const spokenTwo = tree => (tree === null ? '' : typeof tree === 'string' ? tree : Array.isArray(tree) ? tree.map(spokenTwo).join('')
+  : tree.props.className === 'vsr-s2__sep' ? ' · ' : tree.props.className === 'vsr-s2__to' ? ' → ' : spokenTwo(tree.props.children))
+
+test('a model\'s own name comes from its id', () => {
+  const { exports } = load()
+  assert.deepEqual(['deepseek/deepseek-v4.1-flash', 'zai/glm-5.3-flash', 'qwen/qwen3.8-27b', 'qwen/qwen3.8-flash-next', 'Qwen/Qwen3-Omni-30B-A3B-Instruct', 'local-model', 'gpt-5.1'].map(exports.modelName),
+    ['DeepSeek-V4.1-Flash', 'GLM-5.3-Flash', 'Qwen3.8-27B', 'Qwen3.8-Flash-Next', 'Qwen3-Omni-30B-A3B-Instruct', 'Local-Model', 'GPT-5.1'])
+})
+
+test('the router\'s pick is one muted line per turn, under its latest call, and a new model shows the one before it', () => {
+  const { exports } = load()
+  const nodes = assemble(exports.definition, [
+    route({ turn: 1, step: 1 }),
+    route({ turn: 1, step: 2 }),
+    route({ turn: 1, step: 3 }),
+    route({ turn: 2, step: 1, model: 'zai/glm-5.3-flash', lane: 'recovery', reasoning: 'off', was: 'deepseek/deepseek-v4.1-flash' }),
+    route({ turn: 3, step: 1, model: 'qwen/qwen3.8-27b', lane: 'standard', reasoning: 'medium', was: 'zai/glm-5.3-flash' }),
+    route({ turn: 3, step: 2, model: 'deepseek/deepseek-v4.1-flash', lane: 'long_context', reasoning: undefined }),
+    route({ turn: 4, step: 1, model: undefined }),
+  ])
+  assert.equal(nodes.length, 4)
+  const [first, changed, chain, empty] = nodes
+  assert.deepEqual([first.id, first.anchorSeq, first.groupTree, first.visibility], ['t1:route', first.data.rows[2].seq, 'turn', 'visible'], 'the line follows the turn\'s latest call')
+
+  const line = render(exports.SystemOneNode({ node: first }))
+  const [root] = findAll(line, props => props['data-system-two'])
+  assert.deepEqual(two(root, ['', 'model', 'decision', 'reasoning', 'changed', 'count', 'turn']), { '': 'route', model: 'deepseek/deepseek-v4.1-flash', decision: 'agentic', reasoning: 'on', changed: undefined, count: '3', turn: '1' })
+  assert.equal(spokenTwo(line), 'DeepSeek-V4.1-Flash · thinking · agentic')
+  assert.equal(root.props.role, 'note')
+  assert.equal(root.props['aria-label'], 'System Two: DeepSeek-V4.1-Flash · thinking · agentic')
+  assert.equal(root.props.title, 'vLLM Semantic Router picked deepseek/deepseek-v4.1-flash for agentic, reasoning on (3 calls this turn)')
+  assert.deepEqual(findAll(line, props => props['data-system-two-part']).map(element => element.props['data-system-two-part']), ['icon', 'model', 'reasoning', 'decision'])
+  assert.equal(findAll(line, props => props['data-system-one']).length, 0, 'it is no System One element')
+
+  const moved = render(exports.SystemOneNode({ node: changed }))
+  assert.equal(spokenTwo(moved), 'DeepSeek-V4.1-Flash → GLM-5.3-Flash · thinking off · recovery')
+  assert.equal(two(findAll(moved, props => props['data-system-two'])[0], ['changed']).changed, 'yes')
+  assert.match(findAll(moved, props => props['data-system-two'])[0].props.className, /vsr-s2--changed/)
+  assert.deepEqual(findAll(moved, props => props['data-system-two-part'] === 'was').map(element => element.props.title), ['deepseek/deepseek-v4.1-flash'])
+
+  // a change inside the turn, after one from the turn before: the line names the model just before, the tooltip all
+  const chained = render(exports.SystemOneNode({ node: chain }))
+  assert.equal(spokenTwo(chained), 'Qwen3.8-27B → DeepSeek-V4.1-Flash · long context')
+  assert.equal(findAll(chained, props => props['data-system-two'])[0].props.title, 'vLLM Semantic Router picked deepseek/deepseek-v4.1-flash for long context (2 calls this turn), after zai/glm-5.3-flash, qwen/qwen3.8-27b')
+  assert.equal(findAll(render(exports.SystemOneNode({ node: empty })), props => props['data-system-two']).length, 0, 'a record without a model draws nothing')
+})
+
+test('the model line\'s selectors and styles are the ones docs/reference.md documents', () => {
+  const tags = []
+  load({ document: { head: { appendChild: tag => tags.push(tag) }, createElement: () => ({ dataset: {} }), querySelector: () => null } })
+  assert.match(tags[0].textContent, /\.vsr-s2\{[^}]*font-size:12px/)
+  assert.match(tags[0].textContent, /prefers-reduced-motion:reduce\)\{[^}]*\.vsr-s2\{/)
+  const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8')
+  const selectors = reference.slice(reference.indexOf('### Selectors'), reference.indexOf('## Your data'))
+  const drawn = new Set([...SOURCE.matchAll(/'data-system-two-part': '([a-z-]+)'/g)].map(match => match[1]))
+  assert.deepEqual([...drawn].sort(), ['decision', 'icon', 'model', 'reasoning', 'was'])
+  for (const value of drawn) assert.ok(selectors.includes(`data-system-two-part="${value}"`) || selectors.includes(`\`${value}\``), `docs/reference.md documents ${value}`)
+  for (const name of ['data-system-two', 'data-system-two-model', 'data-system-two-decision', 'data-system-two-reasoning', 'data-system-two-changed']) assert.ok(selectors.includes(`\`${name}\``), `docs/reference.md documents ${name}`)
+})

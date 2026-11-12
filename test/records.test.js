@@ -175,7 +175,9 @@ function fakeDecisions({ delayMs = 0 } = {}) {
 }
 
 function harness(url, overrides = {}) {
+  // the plain listener each event got last, and every listener in cordis's order: a prepended one goes first
   const handlers = new Map()
+  const listeners = new Map()
   const disposers = []
   const ctx = {
     effect: fn => disposers.push(fn()),
@@ -183,7 +185,27 @@ function harness(url, overrides = {}) {
     get: () => undefined,
     systemPrompt: { section: () => {} },
     tools: { register: () => {} },
-    on: (event, handler) => handlers.set(event, handler),
+    on: (event, handler, options) => {
+      const list = listeners.get(event) ?? []
+      if (options?.prepend) list.unshift(handler)
+      else {
+        list.push(handler)
+        handlers.set(event, handler)
+      }
+      listeners.set(event, list)
+      return () => {
+        const at = list.indexOf(handler)
+        if (at >= 0) list.splice(at, 1)
+        return at >= 0
+      }
+    },
+  }
+  // a cordis waterfall over every listener of the event, the innermost call last
+  const waterfall = (event, ...args) => {
+    const inner = args.pop()
+    const queue = [...(listeners.get(event) ?? [])]
+    const next = () => (queue.shift() ?? inner)(...args, next)
+    return next()
   }
   const config = {
     baseURL: url, apiKeyEnv: 'S1_RECORDS_KEY', apiKeyFile: '', autoKeys: false, llmKeyEnv: 'S1_RECORDS_LLM_KEY', keyLabel: 'test',
@@ -196,7 +218,7 @@ function harness(url, overrides = {}) {
     ...overrides,
   }
   const agent = { session: { id: `session-${Math.random()}`, records: [] }, steer: message => (agent.steered = message) }
-  return { ctx, config, handlers, agent, close: () => disposers.forEach(dispose => dispose?.()) }
+  return { ctx, config, handlers, waterfall, agent, close: () => disposers.forEach(dispose => dispose?.()) }
 }
 
 test('each reflex writes one record per System One call, with the answers and what the plugin did', async t => {
@@ -704,4 +726,165 @@ test('systemOneUi off writes no records and keeps the reflexes working', async t
   const denied = await handlers.get('tools/pre-execute')({ name: 'bash', callId: 'c1', arguments: { command: 'rm -rf ~' }, agent }, async () => ({ kind: 'allow' }))
   assert.equal(denied.kind, 'deny')
   assert.deepEqual(agent.session.records, [])
+})
+
+// DeepSeek Harness's own snapshots, as its default pre-step and its time-context listener add them
+const snapshot = (kind, text) => ({ role: 'user', content: [{ type: 'text', text }], source: { kind, form: 'snapshot' } })
+const RUNTIME = snapshot('runtime-context', 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current working directory: "/w".')
+const TIME = snapshot('time-context', 'Time sampled while preparing turn 2, step 1: 2026-11-12T09:00:00+00:00[UTC]')
+const ROUTER = { llmProvider: 'vllm-sr', routerSession: true, routerTrace: true, modelLine: true }
+
+test('the notices go before the request, and in a session on the router the user\'s own words come last', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const { server, url } = await fakeDecisions()
+  const plugin = await import('../src/index.js')
+  const { ctx, config, handlers, waterfall, agent, close } = harness(url, ROUTER)
+  t.after(() => {
+    close()
+    server.close()
+  })
+  plugin.apply(ctx, config)
+  // DeepSeek Harness's time context starts after the plugin, so its prepended listener wraps the plugin's at first
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next()
+    return { ...decision, messages: [...decision.messages, TIME] }
+  }, { prepend: true })
+  const user = { role: 'user', content: [{ type: 'text', text: 'no, I meant the staging database' }], source: { kind: 'user' } }
+  const step = turn => waterfall('agent/pre-step', { agent, messages: [user], turn, step: 1 }, async () => ({ kind: 'enter', messages: [user, RUNTIME] }))
+  const kinds = decision => decision.messages.map(message => message.source.kind)
+
+  agent.options = { provider: 'vllm-sr' }
+  assert.deepEqual(kinds(await step(1)), ['system-one', 'runtime-context', 'user', 'time-context'], 'the listener outside the plugin\'s adds its snapshot last')
+  // the request reaches the agent's inbox before its step, and the plugin's listener is prepended again
+  handlers.get('agent/inbox/inserted')({ message: user })
+  const routed = await step(1)
+  assert.deepEqual(kinds(routed), ['system-one', 'runtime-context', 'time-context', 'user'])
+  assert.match(routed.messages[0].content[0].text, /^\[System One triage · vllm-sr\/d3-ultra · \d+ ms\] The request that follows: kind code/)
+  assert.equal(routed.messages.at(-1), user, 'the last user message that has text, which the router routes on, is the user\'s')
+
+  // once the session has a logged request, its provider decides
+  agent.session.requestHeader = () => ({ config: { provider: 'deepseek-official', model: 'deepseek-v4' } })
+  assert.deepEqual(kinds(await step(2)), ['system-one', 'user', 'runtime-context', 'time-context'], 'another provider keeps DeepSeek Harness\'s order; the notice still goes first')
+  agent.session.requestHeader = () => ({ config: { provider: 'vllm-sr', model: 'vllm-sr/auto' } })
+  assert.deepEqual(kinds(await step(3)), ['system-one', 'runtime-context', 'time-context', 'user'])
+})
+
+// The model service behind the router's route: it keeps each chat request's headers and answers with its own.
+function fakeRouter(before) {
+  const sent = []
+  const router = { answer: { 'x-vsr-selected-model': 'deepseek/deepseek-v4.1-flash', 'x-vsr-selected-decision': 'agentic', 'x-vsr-trace': 'algorithm=static, reasoning=on' }, sent }
+  router.fetch = async (input, init) => {
+    if (!String(input).endsWith('/v1/chat/completions')) return before(input, init)
+    sent.push(Object.fromEntries(new Headers(init?.headers)))
+    return new Response('data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream', ...router.answer } })
+  }
+  return router
+}
+
+// one model call through the plugin's llm/stream listener, its adapter making the request
+async function chat(handlers, options) {
+  const listener = handlers.get('llm/stream')
+  const adapter = () => (async function* () {
+    const response = await globalThis.fetch('http://relay:9090/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    yield { type: 'finish', status: response.status }
+  })()
+  const chunks = []
+  for await (const chunk of listener ? listener(options, adapter) : adapter()) chunks.push(chunk)
+  return chunks
+}
+
+test('a conversation request on the router names its session, and the model the router picked follows the answer', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const { server, url } = await fakeDecisions()
+  const before = globalThis.fetch
+  const router = fakeRouter(before)
+  globalThis.fetch = router.fetch
+  const plugin = await import('../src/index.js')
+  const { ctx, config, handlers, agent, close } = harness(url, { ...ROUTER, triage: false })
+  t.after(() => {
+    close()
+    server.close()
+    globalThis.fetch = before
+  })
+  plugin.apply(ctx, config)
+  const id = agent.session.id
+  const records = () => agent.session.records.filter(entry => entry.data.reflex === 'route').map(entry => entry.data)
+  const event = (type, data) => handlers.get('session/event')(agent.session, { type, data })
+  const call = extra => ({ provider: 'vllm-sr', model: 'vllm-sr/auto', sessionId: id, messages: [], ...extra })
+  const user = { role: 'user', content: [{ type: 'text', text: 'Fix the failing test' }], source: { kind: 'user' } }
+
+  await handlers.get('agent/pre-step')({ agent, messages: [user], turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [user] }))
+  assert.deepEqual(await chat(handlers, call()), [{ type: 'finish', status: 200 }])
+  assert.deepEqual(router.sent[0], { 'content-type': 'application/json', 'x-session-id': id, 'x-conversation-id': id, 'x-vsr-debug': 'true' })
+  assert.deepEqual(records(), [], 'the line waits for the answer it follows to be logged')
+  event('assistant/message', { turn: 1, step: 1, message: { content: [] } })
+  await Promise.resolve()
+  assert.deepEqual(records(), [{ v: 1, ui: 'card', reflex: 'route', turn: 1, step: 1, model: 'deepseek/deepseek-v4.1-flash', lane: 'agentic', reasoning: 'on' }])
+
+  // the next call goes to another model: its record names the one before
+  await handlers.get('agent/pre-step')({ agent, messages: [], turn: 1, step: 2 }, async () => ({ kind: 'enter', messages: [] }))
+  router.answer = { 'x-vsr-selected-model': 'zai/glm-5.3-flash', 'x-vsr-selected-decision': 'recovery' }
+  await chat(handlers, call())
+  event('step/end', { turn: 1, step: 2 })
+  await Promise.resolve()
+  assert.deepEqual(records().at(-1), { v: 1, ui: 'card', reflex: 'route', turn: 1, step: 2, model: 'zai/glm-5.3-flash', lane: 'recovery', was: 'deepseek/deepseek-v4.1-flash' })
+
+  // a retried call keeps its step's comparison
+  await handlers.get('agent/pre-step')({ agent, messages: [], turn: 2, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+  router.answer = { 'x-vsr-selected-model': 'deepseek/deepseek-v4.1-flash', 'x-vsr-selected-decision': 'agentic' }
+  await chat(handlers, call())
+  await chat(handlers, call())
+  event('assistant/message', { turn: 2, step: 1, message: { content: [] } })
+  await Promise.resolve()
+  assert.deepEqual(records().map(data => [data.turn, data.step, data.model, data.was ?? null]), [
+    [1, 1, 'deepseek/deepseek-v4.1-flash', null],
+    [1, 2, 'zai/glm-5.3-flash', 'deepseek/deepseek-v4.1-flash'],
+    [2, 1, 'deepseek/deepseek-v4.1-flash', 'zai/glm-5.3-flash'],
+  ])
+
+  // a title and another provider's request carry nothing and record nothing
+  const sent = router.sent.length
+  await chat(handlers, call({ purpose: 'session-title' }))
+  await chat(handlers, call({ provider: 'deepseek-official' }))
+  event('turn/end', { turn: 2 })
+  await Promise.resolve()
+  assert.deepEqual(router.sent.slice(sent).map(headers => Object.keys(headers).filter(name => name.startsWith('x-'))), [[], []])
+  assert.equal(records().length, 3)
+
+  // DeepSeek Harness 0.2.2 sets the request's headers in its own waterfall; one already there stays
+  const seam = handlers.get('llm-pi-ai/request-headers')
+  const prepared = seam({ provider: 'vllm-sr', model: 'vllm-sr/auto', sessionId: id }, new Headers(), () => new Headers({ authorization: 'x', 'x-session-id': 'kept' }))
+  assert.deepEqual(Object.fromEntries(prepared), { authorization: 'x', 'x-conversation-id': id, 'x-session-id': 'kept', 'x-vsr-debug': 'true' })
+  assert.deepEqual([...seam({ provider: 'vllm-sr', sessionId: id, purpose: 'session-title' }, new Headers(), () => new Headers()).keys()], [])
+})
+
+test('the session headers and the model line each turn off, and with both off fetch is left alone', async t => {
+  process.env.S1_RECORDS_KEY = 'sk-vsr-test'
+  const { server, url } = await fakeDecisions()
+  const before = globalThis.fetch
+  const router = fakeRouter(before)
+  globalThis.fetch = router.fetch
+  t.after(() => {
+    server.close()
+    globalThis.fetch = before
+  })
+  const plugin = await import('../src/index.js')
+  const run = async overrides => {
+    const { ctx, config, handlers, agent, close } = harness(url, { ...ROUTER, triage: false, ...overrides })
+    plugin.apply(ctx, config)
+    const wrapped = globalThis.fetch !== router.fetch
+    await handlers.get('agent/pre-step')({ agent, messages: [], turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+    await chat(handlers, { provider: 'vllm-sr', model: 'vllm-sr/auto', sessionId: agent.session.id, messages: [] })
+    handlers.get('session/event')(agent.session, { type: 'step/end', data: { turn: 1, step: 1 } })
+    await Promise.resolve()
+    close()
+    return { wrapped, headers: Object.keys(router.sent.at(-1)).filter(name => name.startsWith('x-')), lines: agent.session.records.length }
+  }
+  assert.deepEqual(await run({ routerSession: false }), { wrapped: true, headers: ['x-vsr-debug'], lines: 1 })
+  assert.deepEqual(await run({ modelLine: false }), { wrapped: true, headers: ['x-conversation-id', 'x-session-id'], lines: 0 })
+  assert.deepEqual(await run({ routerTrace: false }), { wrapped: true, headers: ['x-conversation-id', 'x-session-id'], lines: 1 })
+  assert.deepEqual(await run({ systemOneUi: 'off' }), { wrapped: true, headers: ['x-conversation-id', 'x-session-id'], lines: 0 })
+  const off = await run({ routerSession: false, modelLine: false })
+  assert.deepEqual([off.wrapped, off.lines], [false, 0])
+  assert.equal(globalThis.fetch, router.fetch)
 })

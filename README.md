@@ -112,7 +112,8 @@ with mail, a spreadsheet, Gitea, an admin console and a web store. Then try your
   `vllm-sr/d3-ultra` triages, scores Shield's passages and answers the `system_one` tool, and `vllm-sr/vela3-turbo`
   runs Guard, Privacy, the done-check, every span answer and the screen.
 - **System Two, slow.** `vllm-sr/auto` plans, reasons and acts, picking the right open model for each request. The
-  plugin makes it your default model; choose any other model in the app and System One keeps working beside it.
+  plugin makes it your default model, keeps each session on one model, and shows the model it picked in one muted
+  line under each turn; choose any other model in the app and System One keeps working beside it.
 - **One router.** vLLM Semantic Router serves System One and routes System Two at
   [app.vllm-sr.ai](https://app.vllm-sr.ai), and both take the one free key the plugin fetches. The router works with
   any model, open or closed.
@@ -138,6 +139,7 @@ It works as installed. To change it, set fields on the `system-one` row of your 
     screenTool: true   # system_one_screen, for computer use
     autoKeys: true     # fetch the free key on first run
     systemOneUi: card  # how Chat shows System One: card, compact or off
+    modelLine: true    # the line under each turn with the model vllm-sr/auto picked
 ```
 
 **Your key** is kept in DeepSeek Harness's credential store and in `~/.dsh/.env`, readable by you only. In CI, set
@@ -154,7 +156,8 @@ measured: **[the full reference](https://github.com/Xunzhuo/dsh-system-one-plugi
 
 **What leaves my machine?** What System One decides about: your request (clipped), the tool calls it reviews, the
 passages of tool results it screens, the end of each turn, and what System Two hands its tools. Privacy sends the
-results it masks to System One whole, and System Two gets the conversation, as any LLM provider does. System Duo logs
+results it masks to System One whole, and System Two gets the conversation, as any LLM provider does, with the agent
+session's random id so that the router keeps a session on one model. System Duo logs
 requests to improve its services and train models, so read its [privacy page](https://app.vllm-sr.ai/privacy) before
 you use it with private code or data. Every reflex can be turned off, and the local trace never records keys.
 
